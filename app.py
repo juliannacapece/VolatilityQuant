@@ -17,7 +17,7 @@ h1,h2,h3{letter-spacing:-.025em}
 div.stButton>button[kind="primary"]{background:linear-gradient(100deg,#7746dd,#3665e9);border:none;border-radius:10px;color:white}
 [data-testid="stSidebar"]{background:#10111e}
 .hero{padding:26px;border:1px solid #303050;border-radius:22px;background:linear-gradient(110deg,#21193d,#111827 75%);margin-bottom:20px}
-.eyebrow{font-size:.72rem;letter-spacing:.22em;color:#9c92c9;font-weight:700}
+.eyebrow{font-size:.72rem;letter-spacing:.22em;color:#9c92c9;font-weight:400}
 .hero h1{font-size:2.7rem;margin:.3rem 0;color:#f7f5ff}
 .hero p{color:#c3bfd6;margin-bottom:0}
 </style>''',unsafe_allow_html=True)
