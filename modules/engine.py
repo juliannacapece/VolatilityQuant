@@ -44,30 +44,141 @@ def forecast_from_prices(p):
     x=np.maximum(np.exp(model.predict(features[cols].dropna().iloc[[-1]])[0])-EPS,1e-8)
     return {'Historical':float(hist),'GARCH':float(garch),'XGBoost':float(np.sqrt(x*252))}
 
-def option_data(ticker,max_expirations=18):
-    stock=yf.Ticker(ticker)
-    h=stock.history(period='5d')
-    if h.empty:raise ValueError('No recent stock prices')
-    spot=float(h['Close'].dropna().iloc[-1]);parts=[]
-    for exp in stock.options[:max_expirations]:
-        try:
-            chain=stock.option_chain(exp)
-            for typ,df in [('Call',chain.calls),('Put',chain.puts)]:
-                if not df.empty:
-                    q=df.copy();q['optionType']=typ;q['expiration']=exp;parts.append(q)
-        except Exception:continue
-    if not parts:raise ValueError('No available options chains')
-    d=pd.concat(parts,ignore_index=True)
-    for c in ['strike','bid','ask','impliedVolatility']:d[c]=pd.to_numeric(d[c],errors='coerce')
-    d=d[(d.bid>0)&(d.ask>d.bid)&d.impliedVolatility.between(.01,3)].copy()
-    d['relativeSpread']=(d.ask-d.bid)/((d.ask+d.bid)/2)
-    d['expiration']=pd.to_datetime(d.expiration)
-    now=pd.Timestamp.now(tz='America/New_York').normalize().tz_localize(None)
-    d['daysToExpiration']=(d.expiration-now).dt.days
-    d['Moneyness']=d.strike/spot;d['IV_Percent']=d.impliedVolatility*100
-    d=d[d.relativeSpread.lt(.30)&d.daysToExpiration.between(7,365)&d.Moneyness.between(.70,1.30)&d.IV_Percent.between(5,150)].copy()
-    if d.empty:raise ValueError('No options passed quote filters')
-    return spot,d
+
+def option_data(ticker, max_expirations=18):
+    import time
+
+    stock = yf.Ticker(ticker)
+
+    # Get recent stock price
+    h = stock.history(period="5d")
+
+    if h.empty:
+        raise ValueError(
+            f"No recent stock prices available for {ticker}"
+        )
+
+    spot = float(h["Close"].dropna().iloc[-1])
+
+    # Retrieve expiration dates
+    try:
+        expirations = stock.options
+    except Exception as e:
+        raise RuntimeError(
+            f"Could not retrieve expiration dates: {e}"
+        ) from e
+
+    if not expirations:
+        raise ValueError(
+            f"No expiration dates returned for {ticker}. "
+            "Yahoo Finance may be temporarily unavailable."
+        )
+
+    parts = []
+    errors = []
+
+    for exp in expirations[:max_expirations]:
+
+        chain = None
+
+        # Retry temporary download failures
+        for attempt in range(2):
+            try:
+                chain = stock.option_chain(exp)
+                break
+
+            except Exception as e:
+                errors.append(
+                    f"{exp} attempt {attempt + 1}: "
+                    f"{type(e).__name__}: {e}"
+                )
+
+                if attempt == 0:
+                    time.sleep(1.5)
+
+        if chain is None:
+            continue
+
+        for typ, df in [
+            ("Call", chain.calls),
+            ("Put", chain.puts)
+        ]:
+            if not df.empty:
+                q = df.copy()
+                q["optionType"] = typ
+                q["expiration"] = exp
+                parts.append(q)
+
+    if not parts:
+        details = "; ".join(errors[:3])
+
+        raise RuntimeError(
+            f"No options chains could be downloaded "
+            f"for {ticker}. "
+            f"Errors: {details or 'No contracts returned'}"
+        )
+
+    d = pd.concat(parts, ignore_index=True)
+
+    # Convert numerical columns
+    for c in [
+        "strike",
+        "bid",
+        "ask",
+        "impliedVolatility"
+    ]:
+        d[c] = pd.to_numeric(
+            d[c], errors="coerce"
+        )
+
+    # Initial quote filtering
+    d = d[
+        (d["bid"] > 0)
+        & (d["ask"] > d["bid"])
+        & d["impliedVolatility"].between(.01, 3)
+    ].copy()
+
+    d["relativeSpread"] = (
+        (d["ask"] - d["bid"])
+        / ((d["ask"] + d["bid"]) / 2)
+    )
+
+    d["expiration"] = pd.to_datetime(
+        d["expiration"]
+    )
+
+    now = (
+        pd.Timestamp.now(tz="America/New_York")
+        .normalize()
+        .tz_localize(None)
+    )
+
+    d["daysToExpiration"] = (
+        d["expiration"] - now
+    ).dt.days
+
+    d["Moneyness"] = d["strike"] / spot
+
+    d["IV_Percent"] = (
+        d["impliedVolatility"] * 100
+    )
+
+    # Final data-quality filters
+    d = d[
+        d["relativeSpread"].lt(.30)
+        & d["daysToExpiration"].between(7, 365)
+        & d["Moneyness"].between(.70, 1.30)
+        & d["IV_Percent"].between(5, 150)
+    ].copy()
+
+    if d.empty:
+        raise ValueError(
+            f"Options were downloaded for {ticker}, "
+            "but no contracts passed the quality filters."
+        )
+
+    return spot, d
+
 
 def surface_grid(df,xcol='Moneyness'):
     d=df.groupby([xcol,'daysToExpiration'],as_index=False)['IV_Percent'].median()
