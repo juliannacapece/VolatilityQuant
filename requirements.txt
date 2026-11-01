@@ -3,7 +3,7 @@ numpy
 pandas
 plotly
 scipy
-yfinance
+yfinance==0.2.66
 arch
 xgboost
 scikit-learn
