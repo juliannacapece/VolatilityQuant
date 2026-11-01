@@ -85,6 +85,19 @@ elif page=='01 · AI Forecasting':
 
 elif page=='02 · IV Surface':
     st.header('Implied Volatility Explorer')
+    if st.button("Test Yahoo Finance Connection"):
+    import yfinance as yf
+
+    try:
+        stock = yf.Ticker("AAPL")
+        expirations = stock.options
+
+        st.write("Expiration count:", len(expirations))
+        st.write("First expirations:", expirations[:5])
+        st.write("yfinance version:", yf.__version__)
+
+    except Exception as e:
+        st.error(f"{type(e).__name__}: {e}")
     data_mode = st.radio(
         'Options data source',
         ['Live Yahoo Finance', 'Saved AAPL Snapshot'],
