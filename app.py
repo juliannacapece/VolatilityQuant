@@ -155,4 +155,3 @@ elif page=='04 · Stress Testing':
         st.caption('Drawdown is measured from the running peak since the start of the historical dataset; crisis windows are illustrative selections.')
 
 st.divider();st.caption('VOLATILITYLAB · Research & educational use only · No investment recommendations · Data providers may have delays')
-
