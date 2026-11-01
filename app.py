@@ -196,7 +196,7 @@ elif page=='03 · Options Hedging':
                     f'border-radius:16px;padding:20px 22px;min-height:140px;">'
                     f'<div style="color:#F8FAFC;font-size:16px;margin-bottom:14px;">'
                     f'{label}</div>'
-                    f'<div style="color:{accent};font-size:40px;font-weight:600;'
+                    f'<div style="color:{accent};font-size:40px;font-weight:400;'
                     f'line-height:1.2;">{value}</div></div>',
                     unsafe_allow_html=True,
                 )
