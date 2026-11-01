@@ -1,4 +1,4 @@
-"""VolatilityLab: interactive research dashboard. Run with streamlit run app.py."""
+"""VolatilityQuant: interactive research dashboard. Run with streamlit run app.py."""
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
