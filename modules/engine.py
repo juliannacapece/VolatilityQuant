@@ -18,25 +18,25 @@ def prices_for(ticker, period='5y'):
     if len(p)<100:raise ValueError('At least 100 trading days are required')
     return p
 
-def build_features(r):
+def build_features(r, horizon=HORIZON):
     x=pd.DataFrame(index=r.index)
     for w in (5,10,20,60):
         x[f'var_{w}d']=r.pow(2).rolling(w).mean()
         x[f'return_{w}d']=r.rolling(w).sum()
     x['abs_return_1d']=r.abs();x['return_1d']=r
     x['negative_return_1d']=(r<0).astype(int)
-    future=pd.concat([r.shift(-i).pow(2) for i in range(1,HORIZON+1)],axis=1)
+    future=pd.concat([r.shift(-i).pow(2) for i in range(1,horizon+1)],axis=1)
     x['target']=future.mean(axis=1)
-    x.iloc[-HORIZON:,x.columns.get_loc('target')]=np.nan
+    x.iloc[-horizon:,x.columns.get_loc('target')]=np.nan
     return x
 
-def forecast_from_prices(p):
+def forecast_from_prices(p, horizon=HORIZON):
     r=np.log(p/p.shift(1)).dropna()*100
     hist=np.sqrt(r.iloc[-20:].pow(2).mean()*252)
     fit=arch_model(r,mean='Constant',vol='GARCH',p=1,q=1,dist='t').fit(disp='off',show_warning=False)
-    f=fit.forecast(horizon=HORIZON)
+    f=fit.forecast(horizon=horizon)
     garch=np.sqrt(np.mean(f.variance.iloc[-1].to_numpy()+f.mean.iloc[-1].to_numpy()**2)*252)
-    features=build_features(r);train=features.dropna()
+    features=build_features(r, horizon);train=features.dropna()
     cols=[c for c in features if c!='target']
     if len(train)<250:raise ValueError('Insufficient labeled data for XGBoost')
     model=XGBRegressor(n_estimators=50,max_depth=2,learning_rate=.03,subsample=.8,colsample_bytree=.8,reg_lambda=10,min_child_weight=10,objective='reg:squarederror',random_state=42,n_jobs=2)
@@ -196,16 +196,46 @@ def black_scholes(S,K,T,r,sigma,kind):
     if kind=='call':return S*norm.cdf(d1)-K*np.exp(-r*T)*norm.cdf(d2),norm.cdf(d1)
     return K*np.exp(-r*T)*norm.cdf(-d2)-S*norm.cdf(-d1),norm.cdf(d1)-1
 
+def volatility_schedule(value, days):
+    """Annualized decimal volatility, one value per daily interval."""
+    values = np.asarray(value, dtype=float)
+    if values.ndim == 0:
+        values = np.full(days, float(values))
+    if values.shape != (days,) or not np.all(np.isfinite(values)) or np.any(values <= 0):
+        raise ValueError(f'Provide {days} positive finite daily volatility values')
+    return values
+
+
+def simulate_path(volatility, days=5, spot=100, r=.04, seed=42):
+    vols = volatility_schedule(volatility, days)
+    shocks = np.random.default_rng(seed).standard_normal(days)
+    returns = (r - .5 * vols**2) / 252 + vols / np.sqrt(252) * shocks
+    return np.r_[spot, spot * np.exp(np.cumsum(returns))]
+
+
 def hedge(path,K,T,r,hedge_vol,market_vol,kind='call',cost=.001,size=100):
+    """Long option with offsetting stock; deterministic market variance schedule.
+
+    Day i's hedge input is available before interval i. Market option marks use
+    remaining integrated variance; hedge deltas use the current strategy input
+    as a flat remaining-life assumption. Neither input is an automatic forecast.
+    """
     path=np.asarray(path,dtype=float);n=len(path)-1
-    if n<1 or np.any(path<=0):raise ValueError('Invalid price path')
-    dt=T/n;premium,_=black_scholes(path[0],K,T,r,market_vol,kind)
-    _,delta=black_scholes(path[0],K,T,r,hedge_vol,kind)
-    shares=-delta*size;fees=abs(shares)*path[0]*cost;cash=-premium*size-shares*path[0]-fees;records=[]
+    if n<1 or not np.all(np.isfinite(path)) or np.any(path<=0) or T<=0:
+        raise ValueError('Invalid price path or maturity')
+    hv=volatility_schedule(hedge_vol,n);mv=volatility_schedule(market_vol,n)
+    dt=T/n
+    def pricing_vol(day):
+        return float(np.sqrt(np.mean(mv[day:]**2))) if day<n else float(mv[-1])
+    premium,_=black_scholes(path[0],K,T,r,pricing_vol(0),kind)
+    _,delta=black_scholes(path[0],K,T,r,hv[0],kind)
+    shares=-delta*size;fees=abs(shares)*path[0]*cost
+    cash=-premium*size-shares*path[0]-fees;records=[]
     for day,S in enumerate(path):
         rem=max(T-day*dt,0)
-        price,_=black_scholes(S,K,rem,r,market_vol,kind)
-        _,d=black_scholes(S,K,rem,r,hedge_vol,kind)
+        current_hv=float(hv[min(day,n-1)])
+        price,_=black_scholes(S,K,rem,r,pricing_vol(day),kind)
+        _,d=black_scholes(S,K,rem,r,current_hv,kind)
         if day:
             cash*=np.exp(r*dt)
             if day<n:
@@ -217,6 +247,7 @@ def hedge(path,K,T,r,hedge_vol,market_vol,kind='call',cost=.001,size=100):
         else:value=price*size+shares*S+cash
         records.append({'Day':day,'Stock':S,'PortfolioValue':value,'TransactionCosts':fees,'Delta':d})
     return pd.DataFrame(records)
+
 
 def stress_prices():
     p=prices_for('SPY',period='max')
@@ -312,3 +343,66 @@ def load_aapl_snapshot():
 
     return spot, d, snapshot_time
 
+
+
+def historical_nvda_prices(now=None):
+    """Exclude today's session conservatively, including on early-close days."""
+    now = pd.Timestamp.now(tz='America/New_York') if now is None else pd.Timestamp(now).tz_convert('America/New_York')
+    # Before the next NY calendar day, today's bar is never considered final.
+    end = now.normalize().date()
+    start = (now - pd.DateOffset(years=6)).date()
+    data = yf.download('NVDA', start=str(start), end=str(end), auto_adjust=False, progress=False)
+    if data.empty:
+        raise ValueError('No NVDA data returned')
+    if isinstance(data.columns, pd.MultiIndex):
+        data.columns=data.columns.get_level_values(0)
+    prices=data['Close'].dropna().sort_index()
+    dates=pd.DatetimeIndex(prices.index)
+    if dates.tz is not None:
+        dates=dates.tz_convert('America/New_York').tz_localize(None)
+    prices.index=dates.normalize()
+    prices=prices.loc[prices.index < pd.Timestamp(end)]
+    if len(prices)<320:
+        raise ValueError('Insufficient completed NVDA history')
+    return prices, now
+
+
+def historical_episode(prices, cost=.001, manual=None, forecaster=forecast_from_prices):
+    """Five observed moves; each decision forecasts only its remaining horizon.
+
+    Closing positions approximate execution at observed closes. Rates and time
+    use trading-day conventions. No intermediate option market prices implied.
+    """
+    prices=prices.sort_index().dropna()
+    if len(prices)<320 or not prices.index.is_unique or not np.all(np.isfinite(prices)) or (prices<=0).any():
+        raise ValueError('Need unique dates and at least 320 positive finite closes')
+    path=prices.iloc[-6:]; strike=float(path.iloc[0]); rate=.04; size=100
+    forecasts=[]
+    for i,date in enumerate(path.index[:-1]):
+        history=prices.loc[:date].loc[lambda x:x.index >= date-pd.DateOffset(years=5)]
+        pred=forecaster(history,horizon=5-i)
+        forecasts.append({'Decision date':date,'Next close':path.index[i+1],'Days remaining':5-i,**pred})
+    forecasts=pd.DataFrame(forecasts)
+    if manual is not None:
+        forecasts['Manual']=volatility_schedule(manual,5)*100
+    premium=black_scholes(strike,strike,5/252,rate,forecasts.Historical.iloc[0]/100,'call')[0]
+    rows=[]; ledger=[]
+    for name in ['Historical','GARCH','XGBoost']+(['Manual'] if manual is not None else []):
+        cash=-premium*size; shares=0.; fees=0.; turnover=0.; financed_fees=0.
+        for i,(date,spot) in enumerate(path.items()):
+            if i:
+                cash*=np.exp(rate/252)
+                financed_fees*=np.exp(rate/252)
+            before=shares
+            if i<5:
+                vol=float(forecasts[name].iloc[i])/100
+                _,delta=black_scholes(spot,strike,(5-i)/252,rate,vol,'call')
+                shares=-delta*size
+            else:
+                shares=0.;delta=np.nan
+                cash+=max(spot-strike,0)*size
+            trade=shares-before; notional=abs(trade)*spot;fee=notional*cost
+            cash-=trade*spot+fee;fees+=fee;turnover+=notional;financed_fees+=fee
+            ledger.append({'Strategy':name,'Date':date,'Stock close ($)':spot,'Shares after trade':shares,'Shares traded':trade,'Cash balance ($)':cash,'Cumulative costs ($)':fees})
+        rows.append({'Strategy':name,'Terminal P&L ($)':cash,'Trading costs ($)':fees,'P&L before costs ($)':cash+financed_fees,'Stock turnover ($)':turnover})
+    return {'path':path,'forecasts':forecasts,'summary':pd.DataFrame(rows),'ledger':pd.DataFrame(ledger),'premium':premium,'strike':strike}

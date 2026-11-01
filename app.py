@@ -4,7 +4,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from modules.engine import (prices_for,forecast_from_prices,option_data,surface_grid,
-                            black_scholes,hedge,stress_prices,stress_statistics,STRESS)
+                            historical_nvda_prices,historical_episode,black_scholes,hedge,simulate_path,stress_prices,stress_statistics,STRESS)
 
 PURPLE='#A78BFA';BLUE='#48CAE4';GREEN='#A3DA91';BG='#090B13'
 st.set_page_config(page_title='VolatilityQuant | Quantitative Risk Intelligence',page_icon='◈',layout='wide',initial_sidebar_state='expanded')
@@ -165,44 +165,92 @@ elif page=='02 · IV Surface':
 
 elif page=='03 · Options Hedging':
     st.header('Dynamic Options Hedging')
-    st.caption('Educational five-day simulation; all paths are hypothetical. Volatility inputs can be model-based or manually chosen.')
-    a,b,c=st.columns(3)
-    with a:kind=st.selectbox('Option type',['call','put']);K=st.slider('Strike ($)',70,130,100,5)
-    with b:vol_source=st.selectbox('Hedge volatility source',['Manual','Historical · NVDA','GARCH · NVDA','XGBoost · NVDA']);manual=st.slider('Manual hedge volatility (%)',10,90,35)
-    with c:cost=st.slider('Trading cost (%)',0.0,0.5,0.10,0.05);market=st.slider('Option pricing volatility (%)',10,90,35)
-    if st.button('Run hedge simulation',type='primary'):
-        try:
-            if vol_source=='Manual':hvol=manual/100
-            else:
-                pred=get_forecasts('NVDA');hvol=pred[vol_source.split(' · ')[0]]/100
-            rng=np.random.default_rng(42);S0=100;T=5/252;r=.04;true_vol=market/100
-            shocks=rng.standard_normal(5);path=[S0]
-            for z in shocks:path.append(path[-1]*np.exp((r-.5*true_vol**2)/252+true_vol*np.sqrt(1/252)*z))
-            result=hedge(path,K,T,r,hvol,true_vol,kind,cost/100)
-            st.session_state['hedge_result']=(result,hvol,kind,K)
-        except Exception as e:st.error(f'Simulation unavailable: {e}')
-    if 'hedge_result' in st.session_state:
-        df,hvol,kind,K=st.session_state['hedge_result']
-        a,b,c=st.columns(3)
-        metric_items = [
-            (a, 'Final hedged P&amp;L', f'${df.PortfolioValue.iloc[-1]:,.2f}', PURPLE),
-            (b, 'Total trading costs', f'${df.TransactionCosts.iloc[-1]:,.2f}', BLUE),
-            (c, 'Hedge volatility', f'{hvol*100:.2f}%', GREEN),
-        ]
-        for col, label, value, accent in metric_items:
-            with col:
-                st.markdown(
-                    f'<div style="background:#151725;border:1px solid #2b2b43;'
-                    f'border-radius:16px;padding:20px 22px;min-height:140px;">'
-                    f'<div style="color:#F8FAFC;font-size:16px;margin-bottom:14px;">'
-                    f'{label}</div>'
-                    f'<div style="color:{accent};font-size:38px;font-weight:400;'
-                    f'line-height:1.2;">{value}</div></div>',
-                    unsafe_allow_html=True,
-                )
-        fig=go.Figure();fig.add_trace(go.Scatter(x=df.Day,y=df.PortfolioValue,name='Hedged portfolio',line_color=PURPLE,mode='lines+markers'));fig.add_hline(y=0,line_dash='dash',line_color='#777')
-        fig.update_layout(xaxis_title='Trading day',yaxis_title='Portfolio P&L ($)');st.plotly_chart(style(fig),use_container_width=True)
-        st.caption('Simplified European-style cash settlement, no dividends, fractional shares, fixed model volatility and common Black–Scholes premium. Results are not historical option trades.')
+    mode=st.radio('Experiment',['Historical NVDA','Controlled simulation'],horizontal=True)
+    if mode=='Historical NVDA':
+        st.caption('Latest five completed sessions available, conservatively excluding today. Six unadjusted closes define five stock moves. Hypothetical at-the-money European call, 100 shares, 4% rate, daily close rebalancing, no dividends.')
+        cost=st.slider('Trading cost (%)',0.0,0.5,0.10,0.05,key='historical_cost')
+        manual=None
+        if st.checkbox('Include a manual hedge benchmark'):
+            manual=st.slider('Manual annualized volatility (%)',1,200,35,key='historical_manual')/100
+        st.caption('Historical, GARCH, and XGBoost update before each move using up to five years of past data. Forecast horizons shrink from five days to one. XGBoost uses only fully observed training targets and fixed model settings.')
+        if st.button('Run historical comparison',type='primary'):
+            try:
+                with st.spinner('Loading completed NVDA sessions and fitting daily forecasts...'):
+                    prices,fetched=historical_nvda_prices()
+                    result=historical_episode(prices,cost/100,manual)
+                st.session_state['historical_hedge_result']=(result,fetched,cost)
+            except Exception as e:st.error(f'Historical comparison unavailable: {e}')
+        if 'historical_hedge_result' in st.session_state:
+            result,fetched,run_cost=st.session_state['historical_hedge_result'];path=result['path']
+            st.caption(f'Last completed run · fetched {fetched.strftime("%Y-%m-%d %H:%M %Z")} · latest close {path.index[-1].date()} · trading cost {run_cost:.2f}%. Run again to apply changes.')
+            st.write(f'Opening reference: {path.index[0].date()}. Five evaluated sessions: {path.index[1].date()} through {path.index[-1].date()}. Strike: ${result["strike"]:.2f}. Shared hypothetical premium: ${result["premium"]:.2f} per share.')
+            fig=go.Figure(go.Scatter(x=path.index,y=path.values,name='NVDA close',mode='lines+markers',line_color=BLUE))
+            fig.update_layout(xaxis_title='Session date',yaxis_title='NVDA close ($)')
+            st.plotly_chart(style(fig,320),use_container_width=True)
+            st.subheader('Terminal hedging comparison')
+            st.dataframe(result['summary'],hide_index=True,use_container_width=True)
+            st.subheader('Daily forecasts · annualized volatility (%)')
+            st.dataframe(result['forecasts'],hide_index=True,use_container_width=True)
+            st.subheader('Stock hedge and cash ledger')
+            st.dataframe(result['ledger'],hide_index=True,use_container_width=True)
+            st.info('One historical episode cannot establish which strategy reduces risk consistently. The opening premium is shared and based on starting historical volatility; these are hypothetical options, not observed option trades. Daily cash balances exclude option value and are not daily portfolio P&L.')
+    else:
+        st.caption('Five-day hypothetical stock path, long option, and daily stock hedge. All volatility inputs are annualized.')
+        a,b=st.columns(2)
+        with a:
+            kind=st.selectbox('Option type',['call','put'])
+            K=st.slider('Strike ($)',70,130,100,5)
+        with b:
+            cost=st.slider('Trading cost (%)',0.0,0.5,0.10,0.05)
+
+        def manual_schedule(prefix):
+            mode=st.radio('Volatility schedule',['Constant','Daily'],horizontal=True,key=prefix+'_mode')
+            if mode=='Constant':
+                value=st.slider('Annualized volatility (%)',10,90,35,key=prefix+'_constant')
+                return np.full(5,value/100)
+            values=[]
+            for day,col in enumerate(st.columns(5)):
+                with col:
+                    values.append(st.number_input(f'Day {day+1} (%)',min_value=1.0,max_value=200.0,value=35.0,step=1.0,key=f'{prefix}_{day}'))
+            return np.asarray(values)/100
+
+        st.subheader('1 · Simulated market')
+        st.caption('These values generate stock moves. Each daily value applies to the next close-to-close interval. The full schedule is assumed known for option pricing, using remaining average variance.')
+        market_vols=manual_schedule('market')
+        st.subheader('2 · Hedging strategy')
+        st.caption('These are the strategy’s beliefs, used to calculate delta and stock trades. They do not change the simulated stock path.')
+        vol_source=st.selectbox('Hedge volatility source',['Manual'])
+        hedge_vols=manual_schedule('hedge') if vol_source=='Manual' else None
+        if vol_source!='Manual':
+            st.caption('The selected NVDA estimate is calculated at the start and held fixed for all five days. It is not updated from the simulated returns.')
+        st.caption('A daily manual hedge value is used before that day’s move and is treated as a flat volatility assumption over the option’s remaining life.')
+        if st.button('Run hedge simulation',type='primary'):
+            try:
+                if hedge_vols is None:
+                    pred=get_forecasts('NVDA')
+                    hedge_vols=np.full(5,pred[vol_source.split(' · ')[0]]/100)
+                path=simulate_path(market_vols)
+                result=hedge(path,K,5/252,.04,hedge_vols,market_vols,kind,cost/100)
+                schedule=pd.DataFrame({'Trading day':range(1,6),'Market volatility (%)':market_vols*100,'Hedge volatility (%)':hedge_vols*100})
+                st.session_state['daily_hedge_result']=(result,schedule,vol_source)
+            except Exception as e:st.error(f'Simulation unavailable: {e}')
+        if 'daily_hedge_result' in st.session_state:
+            df,schedule,source=st.session_state['daily_hedge_result']
+            st.caption(f'Last completed run · {source}. Run again to apply changed settings. Stock starts at $100; the same random shocks are used across runs.')
+            a,b=st.columns(2)
+            a.metric('Final hedged P&L',f'${df.PortfolioValue.iloc[-1]:,.2f}')
+            b.metric('Total trading costs',f'${df.TransactionCosts.iloc[-1]:,.2f}')
+            fig=go.Figure()
+            for column,color in [('Market volatility (%)',BLUE),('Hedge volatility (%)',PURPLE)]:
+                fig.add_trace(go.Scatter(x=schedule['Trading day'],y=schedule[column],name=column,line_color=color,mode='lines+markers'))
+            fig.update_layout(xaxis_title='Trading day',yaxis_title='Annualized volatility (%)')
+            st.plotly_chart(style(fig,300),use_container_width=True)
+            st.dataframe(schedule,hide_index=True,use_container_width=True)
+            fig=go.Figure(go.Scatter(x=df.Day,y=df.PortfolioValue,name='Hedged portfolio',line_color=PURPLE,mode='lines+markers'))
+            fig.add_hline(y=0,line_dash='dash',line_color='#888')
+            fig.update_layout(xaxis_title='Trading day',yaxis_title='Portfolio P&L ($)')
+            st.plotly_chart(style(fig),use_container_width=True)
+            st.caption('European-style cash settlement, no dividends, fractional shares, 4% interest, and daily rebalancing. Market volatility follows a deterministic user-defined schedule; this is not a stochastic-volatility pricing model or historical option trade.')
 
 elif page=='04 · Stress Testing':
     st.header('Historical Stress Testing')
