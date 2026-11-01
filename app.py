@@ -45,12 +45,66 @@ with st.sidebar:
 st.markdown('<div class="hero"><div class="eyebrow">VOLATILITYQUANT / RESEARCH PLATFORM</div><h1>Understand volatility.<br>Explore risk.</h1><p>Machine-learning forecasts · Options intelligence · Dynamic hedging · Historical stress analysis</p></div>',unsafe_allow_html=True)
 
 if page=='Overview':
-    a,b,c,d=st.columns(4)
-    for col,name,val in [(a,'Forecast models','3'),(b,'Research securities','5'),(c,'Core modules','4'),(d,'Hedge scenarios','3')]:col.metric(name,val)
-    st.subheader('Research modules')
-    for title,desc in [('01 / AI Volatility Forecasting','Five-day historical, GARCH(1,1) and XGBoost volatility estimates.'),('02 / Implied Volatility Surface','Real option-chain quotes, call/put surfaces and volatility skew.'),('03 / Options Hedging','European option delta hedging with stock rebalancing and trading costs.'),('04 / Historical Stress Testing','SPY volatility and drawdown behavior across three market crises.')]:
-        with st.container(border=True):st.markdown(f'**{title}**');st.caption(desc)
-    st.info('Select a module from the sidebar. Data is fetched on demand; market quotes may be delayed or incomplete.')
+    st.markdown("""
+    <div style="padding:30px 32px;border:1px solid #35304E;border-radius:20px;
+                background:linear-gradient(115deg,#21173D,#101624 85%);margin:12px 0 24px;">
+      <div style="font-size:12px;letter-spacing:3px;color:#A3DA91;font-weight:700;">
+        VOLATILITYQUANT / RESEARCH PLATFORM</div>
+      <div style="font-size:34px;line-height:1.2;font-weight:750;color:#F7F5FF;margin:14px 0;">
+        From volatility forecasts to<br>informed risk analysis.</div>
+      <div style="font-size:16px;color:#C5C3D8;max-width:760px;line-height:1.7;">
+        Explore how statistical models, machine learning, and options analytics
+        help us understand market uncertainty and evaluate financial risk.</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown('### Our research question')
+    st.markdown(
+        '**How do different volatility forecasting approaches behave across market conditions, '
+        'and how might their estimates influence options hedging?**'
+    )
+    st.caption('A research prototype combining historical market data, predictive models, and simulated hedging.')
+
+    st.markdown('### Explore the platform')
+    cards = [
+        ('01', 'AI Volatility Forecasting',
+         'Compare historical volatility, GARCH(1,1), and XGBoost estimates.', '#A78BFA'),
+        ('02', 'Implied Volatility Surface',
+         'Explore option-chain implied volatility across strike and maturity.', '#48CAE4'),
+        ('03', 'Options Hedging Simulator',
+         'Examine delta hedging, rebalancing, and simulated trading costs.', '#A3DA91'),
+        ('04', 'Historical Stress Testing',
+         'Investigate SPY volatility and drawdowns during major market crises.', '#A78BFA'),
+    ]
+    for left, right in [(cards[0], cards[1]), (cards[2], cards[3])]:
+        col1, col2 = st.columns(2, gap='medium')
+        for col, (number, title, description, accent) in zip((col1, col2), (left, right)):
+            with col:
+                st.markdown(
+                    f'<div style="min-height:170px;padding:22px;border:1px solid #302F49;'
+                    f'border-top:3px solid {accent};border-radius:15px;background:#151725;'
+                    f'margin-bottom:16px;">'
+                    f'<div style="font-size:12px;color:{accent};font-weight:750;'
+                    f'letter-spacing:2px;">MODULE {number}</div>'
+                    f'<div style="font-size:19px;color:#F7F5FF;font-weight:700;'
+                    f'margin:12px 0 8px;">{title}</div>'
+                    f'<div style="color:#B6B6C9;font-size:14px;line-height:1.5;">'
+                    f'{description}</div></div>',
+                    unsafe_allow_html=True,
+                )
+
+    st.markdown('### How the research fits together')
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown('**Forecast**')
+        st.caption('Estimate future volatility using statistical and machine-learning methods.')
+    with c2:
+        st.markdown('**Analyze**')
+        st.caption('Explore implied volatility and the sensitivity of option positions.')
+    with c3:
+        st.markdown('**Evaluate**')
+        st.caption('Study simulated hedging outcomes and historical periods of market stress.')
+    st.info('Choose a research module from the sidebar to begin. Market data may be delayed or unavailable.')
 
 elif page=='01 · AI Forecasting':
     st.header('AI Volatility Forecasting')
