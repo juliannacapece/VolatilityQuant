@@ -37,7 +37,9 @@ def get_forecasts(ticker):return forecast_from_prices(get_prices(ticker))
 def get_options(ticker):return option_data(ticker)
 @st.cache_data(ttl=3600,show_spinner=False)
 def get_stress():return stress_prices()
-
+# Handle navigation requests before creating the sidebar widget
+if "next_page" in st.session_state:
+    st.session_state["page_nav"] = st.session_state.pop("next_page")
 with st.sidebar:
     st.markdown('## ◈ VOLATILITYQUANT')
     st.caption('QUANTITATIVE RISK INTELLIGENCE')
@@ -78,7 +80,7 @@ elif page=='01 · AI Forecasting':
         if st.button('Use forecast in hedging simulator',type='primary'):
             st.session_state['hedge_input']={'ticker':t,'model':chosen_model,'volatility_pct':float(pred[chosen_model]),'asof':str(p.index[-1].date())}
             st.session_state.pop('hedge_result',None)
-            st.session_state['page_nav']='03 · Options Hedging'
+            st.session_state['next_page']='03 · Options Hedging'
             st.rerun()
 
 elif page=='02 · IV Surface':
