@@ -232,3 +232,83 @@ def stress_statistics(p):
         if len(pp)<2:continue
         rows.append({'Crisis':name,'Period return (%)':(pp.iloc[-1]/pp.iloc[0]-1)*100,'Peak 20d vol (%)':vol.loc[start:end].max(),'Worst drawdown (%)':dd.loc[start:end].min()})
     return vol,dd,pd.DataFrame(rows)
+
+
+
+from pathlib import Path
+
+def load_aapl_snapshot():
+    """Load saved AAPL option quotes for demo use."""
+
+    file_path = (
+        Path(__file__).resolve().parent.parent
+        / "data"
+        / "AAPL_options_snapshot.csv"
+    )
+
+    if not file_path.exists():
+        raise FileNotFoundError(
+            "AAPL options snapshot was not found."
+        )
+
+    d = pd.read_csv(file_path)
+
+    # Use the approximate stock price from collection
+    spot = 344.63
+
+    # Read the snapshot timestamp
+    snapshot_time = pd.to_datetime(
+        d["snapshotTimestampUTC"].iloc[0],
+        utc=True
+    )
+
+    d["expiration"] = pd.to_datetime(
+        d["expiration"]
+    )
+
+    for column in [
+        "strike", "bid", "ask", "impliedVolatility"
+    ]:
+        d[column] = pd.to_numeric(
+            d[column], errors="coerce"
+        )
+
+    # Apply original quote-quality rules
+    d = d[
+        (d["bid"] > 0) &
+        (d["ask"] > d["bid"]) &
+        d["impliedVolatility"].between(0.01, 3)
+    ].copy()
+
+    d["relativeSpread"] = (
+        (d["ask"] - d["bid"]) /
+        ((d["ask"] + d["bid"]) / 2)
+    )
+
+    # Calculate maturity relative to snapshot date
+    snapshot_date = snapshot_time.tz_convert(
+        "America/New_York"
+    ).date()
+
+    d["daysToExpiration"] = (
+        d["expiration"] -
+        pd.Timestamp(snapshot_date)
+    ).dt.days
+
+    d["Moneyness"] = d["strike"] / spot
+    d["IV_Percent"] = d["impliedVolatility"] * 100
+
+    d = d[
+        (d["relativeSpread"] < 0.30) &
+        d["daysToExpiration"].between(7, 365) &
+        d["Moneyness"].between(0.70, 1.30) &
+        d["IV_Percent"].between(5, 150)
+    ].copy()
+
+    if d.empty:
+        raise ValueError(
+            "No saved contracts passed the filters."
+        )
+
+    return spot, d, snapshot_time
+
