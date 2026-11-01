@@ -1,4 +1,4 @@
-"""VolatilityQuant: interactive research dashboard. Run with streamlit run app.py."""
+"""VolatilityLab: interactive research dashboard. Run with streamlit run app.py."""
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -6,15 +6,18 @@ import streamlit as st
 from modules.engine import (prices_for,forecast_from_prices,option_data,surface_grid,
                             black_scholes,hedge,stress_prices,stress_statistics,STRESS)
 
-PURPLE='#A78BFA';BLUE='#48CAE4';GREEN='#A3DA91';BG='#090B13'
+PURPLE = '#A78BFA'
+BLUE = '#48CAE4'
+GREEN = '#A3DA91'
+BG = '#090B13'
 st.set_page_config(page_title='VolatilityQuant | Quantitative Risk Intelligence',page_icon='◈',layout='wide',initial_sidebar_state='expanded')
 st.markdown('''<style>
 .stApp{background:radial-gradient(ellipse at 75% 0%,#17132d 0%,#090b13 45%);}
 .block-container{padding-top:2rem;max-width:1380px}
 h1,h2,h3{letter-spacing:-.025em}
 [data-testid="stMetric"]{background:#151725;border:1px solid #2b2b43;border-radius:16px;padding:15px}
-[data-testid="stMetricValue"]{color:#b39aff}
-div.stButton>button[kind="primary"]{background:linear-gradient(100deg,#7746dd,#3665e9);border:none;border-radius:10px;color:white}
+[data-testid="stMetricValue"]{color:#A78BFA}
+div.stButton>button[kind="primary"]{background:linear-gradient(100deg,#7746dd,#48CAE4);border:none;border-radius:10px;color:white}
 [data-testid="stSidebar"]{background:#10111e}
 .hero{padding:26px;border:1px solid #303050;border-radius:22px;background:linear-gradient(110deg,#21193d,#111827 75%);margin-bottom:20px}
 .eyebrow{font-size:.72rem;letter-spacing:.22em;color:#9c92c9;font-weight:700}
@@ -38,7 +41,7 @@ def get_stress():return stress_prices()
 with st.sidebar:
     st.markdown('## ◈ VOLATILITYQUANT')
     st.caption('QUANTITATIVE RISK INTELLIGENCE')
-    page=st.radio('Explore', ['Overview','01 · AI Forecasting','02 · IV Surface','03 · Options Hedging','04 · Stress Testing'],label_visibility='collapsed')
+    page=st.radio('Explore', ['Overview','01 · AI Forecasting','02 · IV Surface','03 · Options Hedging','04 · Stress Testing'],label_visibility='collapsed',key='page_nav')
     st.divider()
     st.caption('Research prototype · Not financial advice')
 
@@ -69,6 +72,14 @@ elif page=='01 · AI Forecasting':
         fig=go.Figure(go.Bar(x=list(pred),y=list(pred.values()),marker_color=[GREEN,BLUE,PURPLE],text=[f'{v:.2f}%' for v in pred.values()],textposition='outside'))
         fig.update_layout(yaxis_title='Annualized volatility (%)');st.plotly_chart(style(fig),use_container_width=True)
         st.caption('Historical = trailing 20-day mean squared returns. GARCH and XGBoost estimate next five trading days. These are volatility estimates, not expected stock returns.')
+        st.subheader('Apply this forecast to options hedging')
+        chosen_model=st.selectbox('Choose a forecast model',list(pred),key='transfer_model')
+        st.caption(f'{t} · {chosen_model}: {pred[chosen_model]:.2f}% annualized · five-trading-day horizon')
+        if st.button('Use forecast in hedging simulator',type='primary'):
+            st.session_state['hedge_input']={'ticker':t,'model':chosen_model,'volatility_pct':float(pred[chosen_model]),'asof':str(p.index[-1].date())}
+            st.session_state.pop('hedge_result',None)
+            st.session_state['page_nav']='03 · Options Hedging'
+            st.rerun()
 
 elif page=='02 · IV Surface':
     st.header('Implied Volatility Explorer')
@@ -90,7 +101,7 @@ elif page=='02 · IV Surface':
         try:
             X,Y,Z,points=surface_grid(d)
             fig=go.Figure()
-            fig.add_trace(go.Surface(x=X,y=Y,z=Z,colorscale=[[0,'#17396a'],[.5,'#7447cf'],[1,'#37d7b0']],opacity=.88,colorbar=dict(title='IV %'),name='Interpolated IV'))
+            fig.add_trace(go.Surface(x=X,y=Y,z=Z,colorscale=[[0,'#17396a'],[.5,'#7447cf'],[1,'#A3DA91']],opacity=.88,colorbar=dict(title='IV %'),name='Interpolated IV'))
             fig.add_trace(go.Scatter3d(x=points.Moneyness,y=points.daysToExpiration,z=points.IV_Percent,mode='markers',marker=dict(size=3,color='#e8e6ff'),name='Observed'))
             fig.update_layout(scene=dict(xaxis_title='Strike / spot',yaxis_title='Days to expiry',zaxis_title='IV (%)'))
             st.plotly_chart(style(fig,650),use_container_width=True)
@@ -109,28 +120,65 @@ elif page=='02 · IV Surface':
 
 elif page=='03 · Options Hedging':
     st.header('Dynamic Options Hedging')
-    st.caption('Educational five-day simulation; all paths are hypothetical. Volatility inputs can be model-based or manually chosen.')
+    st.caption('Educational five-day simulation using a normalized $100 starting stock price. The path is hypothetical, NOT a historical path for the selected ticker.')
+    transferred=st.session_state.get('hedge_input')
+    if transferred:
+        st.success(f"Forecast loaded: {transferred['ticker']} · {transferred['model']} · {transferred['volatility_pct']:.2f}% annualized (data through {transferred['asof']})")
+        st.caption('The ticker identifies the source of the volatility estimate; the simulation still starts at $100 and uses synthetic returns.')
+        if st.button('Clear transferred forecast'):
+            st.session_state.pop('hedge_input',None)
+            st.session_state.pop('hedge_result',None)
+            st.rerun()
     a,b,c=st.columns(3)
-    with a:kind=st.selectbox('Option type',['call','put']);K=st.slider('Strike ($)',70,130,100,5)
-    with b:vol_source=st.selectbox('Hedge volatility source',['Manual','Historical · NVDA','GARCH · NVDA','XGBoost · NVDA']);manual=st.slider('Manual hedge volatility (%)',10,90,35)
-    with c:cost=st.slider('Trading cost (%)',0.0,0.5,0.10,0.05);market=st.slider('Option pricing volatility (%)',10,90,35)
+    with a:
+        kind=st.selectbox('Option type',['call','put'])
+        K=st.slider('Strike ($)',70,130,100,5)
+    with b:
+        sources=['Manual']
+        if transferred:
+            sources.append('Forecast from Feature 1')
+        sources.append('Load NVDA forecast')
+        vol_source=st.selectbox('Hedge volatility source',sources,index=1 if transferred else 0)
+        manual=st.slider('Manual hedge volatility (%)',10,90,35)
+        if vol_source=='Load NVDA forecast':
+            nvda_model=st.selectbox('NVDA model',['Historical','GARCH','XGBoost'])
+    with c:
+        cost=st.slider('Trading cost (%)',0.0,0.5,0.10,0.05)
+        market=st.slider('Option pricing / simulation volatility (%)',10,90,35)
     if st.button('Run hedge simulation',type='primary'):
         try:
-            if vol_source=='Manual':hvol=manual/100
+            if vol_source=='Manual':
+                hvol=manual/100
+                source_label='Manual'
+            elif vol_source=='Forecast from Feature 1':
+                hvol=transferred['volatility_pct']/100
+                source_label=f"{transferred['ticker']} · {transferred['model']}"
             else:
-                pred=get_forecasts('NVDA');hvol=pred[vol_source.split(' · ')[0]]/100
-            rng=np.random.default_rng(42);S0=100;T=5/252;r=.04;true_vol=market/100
+                pred=get_forecasts('NVDA')
+                hvol=pred[nvda_model]/100
+                source_label=f'NVDA · {nvda_model}'
+            rng=np.random.default_rng(42)
+            S0=100;T=5/252;r=.04;true_vol=market/100
             shocks=rng.standard_normal(5);path=[S0]
-            for z in shocks:path.append(path[-1]*np.exp((r-.5*true_vol**2)/252+true_vol*np.sqrt(1/252)*z))
+            for z in shocks:
+                path.append(path[-1]*np.exp((r-.5*true_vol**2)/252+true_vol*np.sqrt(1/252)*z))
             result=hedge(path,K,T,r,hvol,true_vol,kind,cost/100)
-            st.session_state['hedge_result']=(result,hvol,kind,K)
-        except Exception as e:st.error(f'Simulation unavailable: {e}')
+            st.session_state['hedge_result']=(result,hvol,kind,K,source_label)
+        except Exception as e:
+            st.error(f'Simulation unavailable: {e}')
     if 'hedge_result' in st.session_state:
-        df,hvol,kind,K=st.session_state['hedge_result']
-        a,b,c=st.columns(3);a.metric('Final hedged P&L',f'${df.PortfolioValue.iloc[-1]:,.2f}');b.metric('Total trading costs',f'${df.TransactionCosts.iloc[-1]:,.2f}');c.metric('Hedge volatility',f'{hvol*100:.2f}%')
-        fig=go.Figure();fig.add_trace(go.Scatter(x=df.Day,y=df.PortfolioValue,name='Hedged portfolio',line_color=PURPLE,mode='lines+markers'));fig.add_hline(y=0,line_dash='dash',line_color='#777')
-        fig.update_layout(xaxis_title='Trading day',yaxis_title='Portfolio P&L ($)');st.plotly_chart(style(fig),use_container_width=True)
-        st.caption('Simplified European-style cash settlement, no dividends, fractional shares, fixed model volatility and common Black–Scholes premium. Results are not historical option trades.')
+        df,hvol,kind,K,source_label=st.session_state['hedge_result']
+        st.caption(f'Hedge volatility source: {source_label}')
+        a,b,c=st.columns(3)
+        a.metric('Final hedged P&L',f'${df.PortfolioValue.iloc[-1]:,.2f}')
+        b.metric('Total trading costs',f'${df.TransactionCosts.iloc[-1]:,.2f}')
+        c.metric('Hedge volatility',f'{hvol*100:.2f}%')
+        fig=go.Figure()
+        fig.add_trace(go.Scatter(x=df.Day,y=df.PortfolioValue,name='Hedged portfolio',line_color=PURPLE,mode='lines+markers'))
+        fig.add_hline(y=0,line_dash='dash',line_color='#777')
+        fig.update_layout(xaxis_title='Trading day',yaxis_title='Portfolio P&L ($)')
+        st.plotly_chart(style(fig),use_container_width=True)
+        st.caption('Simplified European-style cash settlement, no dividends, fractional shares, fixed model volatility and common Black–Scholes premium. Results are not historical option trades. Trading costs are already included in P&L.')
 
 elif page=='04 · Stress Testing':
     st.header('Historical Stress Testing')
