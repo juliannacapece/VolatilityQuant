@@ -98,32 +98,7 @@ elif page=='02 · IV Surface':
 
     except Exception as e:
         st.error(f"{type(e).__name__}: {e}")
-    data_mode = st.radio(
-        'Options data source',
-        ['Live Yahoo Finance', 'Saved AAPL Snapshot'],
-        horizontal=True,
-        key='iv_data_mode'
-    )
-    if data_mode == 'Live Yahoo Finance':
-        ticker = st.text_input('Ticker symbol', value='AAPL', key='iv_ticker').strip().upper()
-    else:
-        ticker = 'AAPL'
-        st.caption('Demonstration mode: previously collected AAPL options observations, not live quotes.')
-
-    if st.button('Load option chains', type='primary'):
-        # Clear stale results so a failed request never displays an earlier ticker/source.
-        st.session_state.pop('option_result', None)
-        try:
-            if data_mode == 'Saved AAPL Snapshot':
-                spot, options, snapshot_time = load_aapl_snapshot()
-                source_label = 'Saved Market Snapshot — ' + snapshot_time.strftime('%Y-%m-%d %H:%M UTC')
-            else:
-                with st.spinner('Retrieving options chains...'):
-                    spot, options = get_options(ticker)
-                source_label = 'Yahoo Finance — latest retrieved data (may be delayed)'
-            st.session_state['option_result'] = (ticker, spot, options, source_label, data_mode)
-        except Exception as e:
-            st.error(f'Options unavailable: {e}')
+    
 
     if 'option_result' in st.session_state:
         t, spot, options, source_label, loaded_mode = st.session_state['option_result']
