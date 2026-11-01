@@ -6,7 +6,7 @@ import streamlit as st
 from modules.engine import (prices_for,forecast_from_prices,option_data,surface_grid,
                             black_scholes,hedge,stress_prices,stress_statistics,STRESS)
 
-PURPLE='#A78BFA';BLUE='#48CAE4';GREEN='#34D399';BG='#090B13'
+PURPLE='#A78BFA';BLUE='#48CAE4';GREEN='#9CAF88';BG='#090B13'
 st.set_page_config(page_title='VolatilityLab | Quantitative Risk Intelligence',page_icon='◈',layout='wide',initial_sidebar_state='expanded')
 st.markdown('''<style>
 .stApp{background:radial-gradient(ellipse at 75% 0%,#17132d 0%,#090b13 45%);}
