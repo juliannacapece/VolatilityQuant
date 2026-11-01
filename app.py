@@ -36,13 +36,13 @@ def get_options(ticker):return option_data(ticker)
 def get_stress():return stress_prices()
 
 with st.sidebar:
-    st.markdown('## ◈ VOLATILITYLAB')
+    st.markdown('## ◈ VOLATILITYQUANT')
     st.caption('QUANTITATIVE RISK INTELLIGENCE')
     page=st.radio('Explore', ['Overview','01 · AI Forecasting','02 · IV Surface','03 · Options Hedging','04 · Stress Testing'],label_visibility='collapsed')
     st.divider()
     st.caption('Research prototype · Not financial advice')
 
-st.markdown('<div class="hero"><div class="eyebrow">VOLATILITYLAB / RESEARCH PLATFORM</div><h1>Understand volatility.<br>Explore risk.</h1><p>Machine-learning forecasts · Options intelligence · Dynamic hedging · Historical stress analysis</p></div>',unsafe_allow_html=True)
+st.markdown('<div class="hero"><div class="eyebrow">VOLATILITYQUANT / RESEARCH PLATFORM</div><h1>Understand volatility.<br>Explore risk.</h1><p>Machine-learning forecasts · Options intelligence · Dynamic hedging · Historical stress analysis</p></div>',unsafe_allow_html=True)
 
 if page=='Overview':
     a,b,c,d=st.columns(4)
