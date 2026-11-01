@@ -7,7 +7,7 @@ from modules.engine import (prices_for,forecast_from_prices,option_data,surface_
                             black_scholes,hedge,stress_prices,stress_statistics,STRESS)
 
 PURPLE='#A78BFA';BLUE='#48CAE4';GREEN='#A3DA91';BG='#090B13'
-st.set_page_config(page_title='VolatilityLab | Quantitative Risk Intelligence',page_icon='◈',layout='wide',initial_sidebar_state='expanded')
+st.set_page_config(page_title='VolatilityQuant | Quantitative Risk Intelligence',page_icon='◈',layout='wide',initial_sidebar_state='expanded')
 st.markdown('''<style>
 .stApp{background:radial-gradient(ellipse at 75% 0%,#17132d 0%,#090b13 45%);}
 .block-container{padding-top:2rem;max-width:1380px}
