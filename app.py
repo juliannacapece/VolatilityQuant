@@ -183,7 +183,23 @@ elif page=='03 · Options Hedging':
         except Exception as e:st.error(f'Simulation unavailable: {e}')
     if 'hedge_result' in st.session_state:
         df,hvol,kind,K=st.session_state['hedge_result']
-        a,b,c=st.columns(3);a.metric('Final hedged P&L',f'${df.PortfolioValue.iloc[-1]:,.2f}');b.metric('Total trading costs',f'${df.TransactionCosts.iloc[-1]:,.2f}');c.metric('Hedge volatility',f'{hvol*100:.2f}%')
+        a,b,c=st.columns(3)
+        metric_items = [
+            (a, 'Final hedged P&amp;L', f'${df.PortfolioValue.iloc[-1]:,.2f}', PURPLE),
+            (b, 'Total trading costs', f'${df.TransactionCosts.iloc[-1]:,.2f}', BLUE),
+            (c, 'Hedge volatility', f'{hvol*100:.2f}%', GREEN),
+        ]
+        for col, label, value, accent in metric_items:
+            with col:
+                st.markdown(
+                    f'<div style="background:#151725;border:1px solid #2b2b43;'
+                    f'border-radius:16px;padding:20px 22px;min-height:140px;">'
+                    f'<div style="color:#F8FAFC;font-size:16px;margin-bottom:14px;">'
+                    f'{label}</div>'
+                    f'<div style="color:{accent};font-size:40px;font-weight:600;'
+                    f'line-height:1.2;">{value}</div></div>',
+                    unsafe_allow_html=True,
+                )
         fig=go.Figure();fig.add_trace(go.Scatter(x=df.Day,y=df.PortfolioValue,name='Hedged portfolio',line_color=PURPLE,mode='lines+markers'));fig.add_hline(y=0,line_dash='dash',line_color='#777')
         fig.update_layout(xaxis_title='Trading day',yaxis_title='Portfolio P&L ($)');st.plotly_chart(style(fig),use_container_width=True)
         st.caption('Simplified European-style cash settlement, no dividends, fractional shares, fixed model volatility and common Black–Scholes premium. Results are not historical option trades.')
