@@ -72,6 +72,8 @@ elif page=='01 · AI Forecasting':
 
 elif page=='02 · IV Surface':
     st.header('Implied Volatility Explorer')
+    import yfinance as yf
+    st.caption(f"yfinance version: {yf.__version__}")
     ticker=st.text_input('Ticker symbol',value='AAPL',key='iv_ticker').strip().upper()
     if st.button('Load option chains',type='primary'):
         try:
