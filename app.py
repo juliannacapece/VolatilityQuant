@@ -206,15 +206,58 @@ elif page=='03 · Options Hedging':
 
 elif page=='04 · Stress Testing':
     st.header('Historical Stress Testing')
-    st.caption('Historical SPY price, 20-day realized volatility and peak-to-date drawdown. Forecasting crisis results remain documented in the research notebook.')
-    crisis=st.selectbox('Select historical event',list(STRESS))
+    st.caption('Historical price, 20-day realized volatility, peak-to-date drawdown and a crisis resilience score for a chosen ticker. Forecasting crisis results remain documented in the research notebook.')
+    sel_a,sel_b=st.columns(2)
+    with sel_a:
+        choice=st.selectbox('Ticker',list(STRESS_TICKERS)+['Custom…'],key='stress_ticker_choice',
+                            format_func=lambda t:t if t=='Custom…' else f'{t} · {STRESS_TICKERS[t]}')
+        ticker=(st.text_input('Custom ticker symbol',value='GOOGL',key='stress_custom_ticker').strip().upper()
+                if choice=='Custom…' else choice)
+    with sel_b:
+        crisis=st.selectbox('Select historical event',list(STRESS))
     if st.button('Analyze historical period',type='primary'):
-        try:
-            with st.spinner('Loading long-run SPY history...'):p=get_stress();vol,dd,summary=stress_statistics(p)
-            st.session_state['stress_result']=(p,vol,dd,summary)
-        except Exception as e:st.error(f'Stress data unavailable: {e}')
-    if 'stress_result' in st.session_state:
-        p,vol,dd,summary=st.session_state['stress_result'];start,end=STRESS[crisis]
+        if not ticker:st.error('Enter a ticker symbol.')
+        else:
+            try:
+                with st.spinner(f'Loading long-run {ticker} history...'):
+                    p,vol,dd,summary,res=get_stress_analysis(ticker)
+                st.session_state['stress_result']=(ticker,p,vol,dd,summary,res)
+            except Exception as e:st.error(f'Stress data unavailable for {ticker}: {e}')
+    if len(st.session_state.get('stress_result',()))==6:
+        t,p,vol,dd,summary,res=st.session_state['stress_result'];start,end=STRESS[crisis]
+        if t!=ticker:st.info(f'Showing results for {t}. Click "Analyze historical period" to load {ticker}.')
+        st.subheader(f'{t} · {crisis}')
+        rr=res[res.Crisis==crisis]
+        if rr.empty:
+            st.warning(f'{t} needs at least one year of price history before the {crisis} window, so no resilience score is shown.')
+        else:
+            x=rr.iloc[0];score=x['Resilience score']
+            band,color=('Strong',GREEN) if score>=60 else ('Moderate',BLUE) if score>=40 else ('Weak','#F87171')
+            rec='Not yet recovered' if x['Recovery censored'] else f"Recovered {x['Recovery date']}"
+            st.markdown(
+                f'<div style="background:linear-gradient(110deg,#21193d,#111827 75%);border:1px solid {color};'
+                f'border-radius:20px;padding:24px 28px;margin-bottom:18px;display:flex;align-items:center;gap:32px;flex-wrap:wrap">'
+                f'<div><div class="eyebrow">CRISIS RESILIENCE SCORE</div>'
+                f'<div style="font-size:64px;color:{color};line-height:1">{score:.0f}<span style="font-size:24px;color:#9c92c9">/100</span></div>'
+                f'<div style="color:{color};font-size:15px;margin-top:4px">{band} recovery</div></div>'
+                f'<div style="color:#c3bfd6;font-size:15px;line-height:1.7">'
+                f'Peak {x["Peak date"]} → trough {x["Trough date"]} · {rec}<br>'
+                f'{x["Max drawdown (%)"]:.1f}% drawdown · {x["Days to recover"]} trading days to recover · '
+                f'{x["6M retracement (%)"]:.0f}% of loss regained in 6 months</div></div>',
+                unsafe_allow_html=True)
+            spy_score=None
+            if t!='SPY':
+                try:
+                    spy_res=get_stress_analysis('SPY')[4];spy_row=spy_res[spy_res.Crisis==crisis]
+                    if not spy_row.empty:spy_score=spy_row['Resilience score'].iloc[0]
+                except Exception:pass
+            cols=st.columns(len(RESILIENCE_WEIGHTS)+(spy_score is not None))
+            for col,(k,w) in zip(cols,RESILIENCE_WEIGHTS.items()):
+                col.metric(f'{k} ({w:.0%})',f"{x[f'{k} score']:.0f}")
+            if spy_score is not None:
+                cols[-1].metric('Resilience vs SPY',f'{score:.0f}',delta=f'{score-spy_score:+.0f} pts')
+            if x['Recovery censored']:
+                st.caption('Price has not regained its pre-crisis peak; the recovery score is an upper bound.')
         r=summary[summary.Crisis==crisis]
         if not r.empty:
             row=r.iloc[0];a,b,c=st.columns(3)
@@ -223,7 +266,10 @@ elif page=='04 · Stress Testing':
         fig.update_layout(xaxis_title='Date',yaxis_title='Annualized volatility (%)');st.plotly_chart(style(fig),use_container_width=True)
         fig=go.Figure(go.Scatter(x=dd.loc[start:end].index,y=dd.loc[start:end].values,line_color=GREEN,fill='tozeroy',name='Drawdown'))
         fig.update_layout(xaxis_title='Date',yaxis_title='Drawdown (%)');st.plotly_chart(style(fig),use_container_width=True)
-        st.dataframe(summary.round(2),hide_index=True,use_container_width=True)
-        st.caption('Drawdown is measured from the running peak since the start of the historical dataset; crisis windows are illustrative selections.')
+        st.dataframe(summary.merge(res[['Crisis','Resilience score','Days to recover']],on='Crisis',how='left').round(2),hide_index=True,use_container_width=True)
+        st.caption('Drawdown is measured from the running peak since the start of the historical dataset (2005 or first listing); crisis windows are market-wide illustrative selections, so a single stock may bottom outside them. '
+                   'Resilience score (0–100) weights depth 30%, time to regain the pre-crisis peak 30%, 6-month retracement 20% and volatility normalization 20%; '
+                   'it uses prices after each window and is descriptive, not predictive. Bands: Strong ≥ 60, Moderate 40–60, Weak < 40. '
+                   'Yahoo Finance mostly covers companies that still trade, so firms that failed in a crisis are missing (survivorship bias); adjusted prices include dividends.')
 
 st.divider();st.caption('VOLATILITYLAB · Research & educational use only · No investment recommendations · Data providers may have delays')
