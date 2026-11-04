@@ -248,6 +248,47 @@ def hedge(path,K,T,r,hedge_vol,market_vol,kind='call',cost=.001,size=100):
         records.append({'Day':day,'Stock':S,'PortfolioValue':value,'TransactionCosts':fees,'Delta':d})
     return pd.DataFrame(records)
 
+def historical_nvda_prices():
+    """Fetch the latest six completed, unadjusted NVDA closing prices."""
+
+    fetched = pd.Timestamp.now(tz="America/New_York")
+
+    data = yf.download(
+        "NVDA",
+        period="10d",
+        auto_adjust=False,
+        progress=False
+    )
+
+    if data.empty:
+        raise ValueError("No NVDA historical prices were returned.")
+
+    # Handle yfinance's newer MultiIndex column format
+    if isinstance(data.columns, pd.MultiIndex):
+        data.columns = data.columns.get_level_values(0)
+
+    if "Close" not in data.columns:
+        raise ValueError("NVDA closing prices were not available.")
+
+    prices = data["Close"].dropna()
+
+    # Conservatively exclude today's session
+    today = fetched.date()
+    prices = prices.loc[
+        [date.date() < today for date in prices.index]
+    ]
+
+    # Six closes = one opening reference + five evaluated moves
+    prices = prices.tail(6)
+
+    if len(prices) < 6:
+        raise ValueError(
+            f"Only {len(prices)} completed NVDA sessions were available; "
+            "six are required."
+        )
+
+    return prices, fetched
+
 
 def stress_prices(ticker='SPY'):
     p=prices_for(ticker,period='max')
