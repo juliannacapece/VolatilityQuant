@@ -34,6 +34,9 @@ def get_forecasts(ticker):return forecast_from_prices(get_prices(ticker))
 def get_options(ticker):return option_data(ticker)
 @st.cache_data(ttl=3600,show_spinner=False)
 def get_stress():return stress_prices()
+def get_stress_analysis(ticker):
+    p=get_stress(ticker);vol,dd,summary=stress_statistics(p)
+    return p,vol,dd,summary,stress_resilience(p,vol)
 
 STRESS_TICKERS={'SPY':'S&P 500 ETF','QQQ':'Nasdaq-100 ETF','IWM':'Russell 2000 ETF','DIA':'Dow Jones ETF',
                 'AAPL':'Apple','MSFT':'Microsoft','AMZN':'Amazon','NVDA':'NVIDIA','JPM':'JPMorgan Chase',
