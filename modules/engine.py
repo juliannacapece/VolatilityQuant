@@ -249,10 +249,6 @@ def hedge(path,K,T,r,hedge_vol,market_vol,kind='call',cost=.001,size=100):
     return pd.DataFrame(records)
 
 
-def stress_prices():
-    p=prices_for('SPY',period='max')
-    return p.loc['2005-01-01':]
-
 STRESS={'2008 Financial Crisis':('2008-09-01','2009-03-31'),'2020 COVID Crash':('2020-02-01','2020-04-30'),'2022 Market Selloff':('2022-01-01','2022-12-31')}
 
 def stress_statistics(p):
@@ -262,7 +258,58 @@ def stress_statistics(p):
         pp=p.loc[start:end]
         if len(pp)<2:continue
         rows.append({'Crisis':name,'Period return (%)':(pp.iloc[-1]/pp.iloc[0]-1)*100,'Peak 20d vol (%)':vol.loc[start:end].max(),'Worst drawdown (%)':dd.loc[start:end].min()})
-    return vol,dd,pd.DataFrame(rows)
+    return vol,dd,pd.DataFrame(rows,columns=['Crisis','Period return (%)','Peak 20d vol (%)','Worst drawdown (%)'])
+
+# --- Crisis resilience score (mirrors notebooks/Feature4_Historical_Stress_Testing_Resilience.ipynb) ---
+# Descriptive only: uses prices AFTER each window, so never use it as a forecasting feature.
+RESILIENCE_WEIGHTS={'Depth':.30,'Recovery':.30,'Retracement':.20,'Vol Normalization':.20}
+
+def resilience_metrics(p,vol,start,end,lookback=252,retrace_days=126,vol_tol=1.25,vol_base_days=60):
+    window=p.loc[start:end]
+    if window.empty:return None
+    idx=p.index
+    # Trough: lowest close in the window; peak: highest close in the prior year up to the trough
+    trough_date,trough_px=window.idxmin(),window.min();t_pos=idx.get_loc(trough_date)
+    start_pos=idx.get_loc(window.index[0])
+    if start_pos<lookback:return None   # need a full year of history before the window
+    pre=p.iloc[max(0,start_pos-lookback):t_pos+1]
+    peak_date,peak_px=pre.idxmax(),pre.max()
+    # Recovery: first close back at or above the pre-crisis peak (right-censored if none)
+    after=p.iloc[t_pos:];recovered=after[after>=peak_px]
+    censored=recovered.empty
+    rec_date=after.index[-1] if censored else recovered.index[0]
+    # Share of the loss regained ~6 months after the trough
+    px_later=p.iloc[min(t_pos+retrace_days,len(p)-1)]
+    # Volatility normalization: peak window vol -> within tolerance of pre-peak median vol
+    base_vol=vol.loc[:peak_date].iloc[:-1].tail(vol_base_days).median()
+    vmax_date=vol.loc[start:end].idxmax()
+    calm=vol.loc[vmax_date:];calm=calm[calm<=vol_tol*base_vol]
+    vol_days=np.nan if calm.empty else vol.index.get_loc(calm.index[0])-vol.index.get_loc(vmax_date)
+    return {'Peak date':peak_date.date(),'Trough date':trough_date.date(),
+            'Recovery date':None if censored else rec_date.date(),'Recovery censored':censored,
+            'Max drawdown (%)':(trough_px/peak_px-1)*100,
+            'Days to recover':idx.get_loc(rec_date)-t_pos,
+            '6M retracement (%)':(px_later-trough_px)/(peak_px-trough_px)*100,
+            'Vol normalization days':vol_days}
+
+def resilience_components(m):
+    """Fixed-anchor 0-100 scores so results stay comparable as crises are added."""
+    vd=m['Vol normalization days']
+    return {'Depth':100*np.clip(1-abs(m['Max drawdown (%)'])/60,0,1),
+            'Recovery':100*np.clip(1-np.log1p(m['Days to recover'])/np.log1p(1260),0,1),
+            'Retracement':100*np.clip(m['6M retracement (%)']/100,0,1),
+            'Vol Normalization':0.0 if pd.isna(vd) else 100*np.clip(1-vd/252,0,1)}
+
+def stress_resilience(p,vol):
+    rows=[]
+    for name,(start,end) in STRESS.items():
+        m=resilience_metrics(p,vol,start,end)
+        if m is None:continue
+        comp=resilience_components(m)
+        rows.append({'Crisis':name,**m,**{f'{k} score':v for k,v in comp.items()},
+                     'Resilience score':sum(RESILIENCE_WEIGHTS[k]*comp[k] for k in comp)})
+    if not rows:return pd.DataFrame(columns=['Crisis','Resilience score','Days to recover'])
+    return pd.DataFrame(rows)
 
 
 
@@ -342,67 +389,6 @@ def load_aapl_snapshot():
         )
 
     return spot, d, snapshot_time
-
-
-
-def historical_nvda_prices(now=None):
-    """Exclude today's session conservatively, including on early-close days."""
-    now = pd.Timestamp.now(tz='America/New_York') if now is None else pd.Timestamp(now).tz_convert('America/New_York')
-    # Before the next NY calendar day, today's bar is never considered final.
-    end = now.normalize().date()
-    start = (now - pd.DateOffset(years=6)).date()
-    data = yf.download('NVDA', start=str(start), end=str(end), auto_adjust=False, progress=False)
-    if data.empty:
-        raise ValueError('No NVDA data returned')
-    if isinstance(data.columns, pd.MultiIndex):
-        data.columns=data.columns.get_level_values(0)
-    prices=data['Close'].dropna().sort_index()
-    dates=pd.DatetimeIndex(prices.index)
-    if dates.tz is not None:
-        dates=dates.tz_convert('America/New_York').tz_localize(None)
-    prices.index=dates.normalize()
-    prices=prices.loc[prices.index < pd.Timestamp(end)]
-    if len(prices)<320:
-        raise ValueError('Insufficient completed NVDA history')
-    return prices, now
-
-
-def historical_episode(prices, cost=.001, manual=None, forecaster=forecast_from_prices):
-    """Five observed moves; each decision forecasts only its remaining horizon.
-
-    Closing positions approximate execution at observed closes. Rates and time
-    use trading-day conventions. No intermediate option market prices implied.
-    """
-    prices=prices.sort_index().dropna()
-    if len(prices)<320 or not prices.index.is_unique or not np.all(np.isfinite(prices)) or (prices<=0).any():
-        raise ValueError('Need unique dates and at least 320 positive finite closes')
-    path=prices.iloc[-6:]; strike=float(path.iloc[0]); rate=.04; size=100
-    forecasts=[]
-    for i,date in enumerate(path.index[:-1]):
-        history=prices.loc[:date].loc[lambda x:x.index >= date-pd.DateOffset(years=5)]
-        pred=forecaster(history,horizon=5-i)
-        forecasts.append({'Decision date':date,'Next close':path.index[i+1],'Days remaining':5-i,**pred})
-    forecasts=pd.DataFrame(forecasts)
-    if manual is not None:
-        forecasts['Manual']=volatility_schedule(manual,5)*100
-    premium=black_scholes(strike,strike,5/252,rate,forecasts.Historical.iloc[0]/100,'call')[0]
-    rows=[]; ledger=[]
-    for name in ['Historical','GARCH','XGBoost']+(['Manual'] if manual is not None else []):
-        cash=-premium*size; shares=0.; fees=0.; turnover=0.; financed_fees=0.
-        for i,(date,spot) in enumerate(path.items()):
-            if i:
-                cash*=np.exp(rate/252)
-                financed_fees*=np.exp(rate/252)
-            before=shares
-            if i<5:
-                vol=float(forecasts[name].iloc[i])/100
-                _,delta=black_scholes(spot,strike,(5-i)/252,rate,vol,'call')
-                shares=-delta*size
-            else:
-                shares=0.;delta=np.nan
-                cash+=max(spot-strike,0)*size
-            trade=shares-before; notional=abs(trade)*spot;fee=notional*cost
-            cash-=trade*spot+fee;fees+=fee;turnover+=notional;financed_fees+=fee
             ledger.append({'Strategy':name,'Date':date,'Stock close ($)':spot,'Shares after trade':shares,'Shares traded':trade,'Cash balance ($)':cash,'Cumulative costs ($)':fees})
         rows.append({'Strategy':name,'Terminal P&L ($)':cash,'Trading costs ($)':fees,'P&L before costs ($)':cash+financed_fees,'Stock turnover ($)':turnover})
     return {'path':path,'forecasts':forecasts,'summary':pd.DataFrame(rows),'ledger':pd.DataFrame(ledger),'premium':premium,'strike':strike}
