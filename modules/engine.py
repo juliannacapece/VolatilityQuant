@@ -415,7 +415,7 @@ def historical_nvda_prices(now=None):
     return prices, now
 
 
-def historical_episode(prices, cost=.001, manual=None, forecaster=forecast_from_prices):
+def historical_episode(prices, cost=.001, manual=None, forecaster=forecast_from_prices, *, include_oracle=False):
     """Five observed moves; each decision forecasts only its remaining horizon.
 
     Closing positions approximate execution at observed closes. Rates and time
@@ -431,11 +431,23 @@ def historical_episode(prices, cost=.001, manual=None, forecaster=forecast_from_
         pred=forecaster(history,horizon=5-i)
         forecasts.append({'Decision date':date,'Next close':path.index[i+1],'Days remaining':5-i,**pred})
     forecasts=pd.DataFrame(forecasts)
+    if include_oracle:
+        # Hindsight benchmark: the future returns are known only to this strategy.
+        squared_returns = np.diff(np.log(path.to_numpy())) ** 2
+        forecasts['Volatility oracle'] = [
+            max(float(np.sqrt(252 * squared_returns[i:].mean()) * 100), 0.01)
+            for i in range(len(squared_returns))
+        ]
     if manual is not None:
         forecasts['Manual']=volatility_schedule(manual,5)*100
     premium=black_scholes(strike,strike,5/252,rate,forecasts.Historical.iloc[0]/100,'call')[0]
     rows=[]; ledger=[]
-    for name in ['Historical','GARCH','XGBoost']+(['Manual'] if manual is not None else []):
+    strategies = ['Historical', 'GARCH', 'XGBoost']
+    if include_oracle:
+        strategies.append('Volatility oracle')
+    if manual is not None:
+        strategies.append('Manual')
+    for name in strategies:
         cash=-premium*size; shares=0.; fees=0.; turnover=0.; financed_fees=0.
         for i,(date,spot) in enumerate(path.items()):
             if i:
