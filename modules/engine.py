@@ -249,6 +249,10 @@ def hedge(path,K,T,r,hedge_vol,market_vol,kind='call',cost=.001,size=100):
     return pd.DataFrame(records)
 
 
+def stress_prices(ticker='SPY'):
+    p=prices_for(ticker,period='max')
+    return p.loc['2005-01-01':]
+
 STRESS={'2008 Financial Crisis':('2008-09-01','2009-03-31'),'2020 COVID Crash':('2020-02-01','2020-04-30'),'2022 Market Selloff':('2022-01-01','2022-12-31')}
 
 def stress_statistics(p):
@@ -389,6 +393,3 @@ def load_aapl_snapshot():
         )
 
     return spot, d, snapshot_time
-            ledger.append({'Strategy':name,'Date':date,'Stock close ($)':spot,'Shares after trade':shares,'Shares traded':trade,'Cash balance ($)':cash,'Cumulative costs ($)':fees})
-        rows.append({'Strategy':name,'Terminal P&L ($)':cash,'Trading costs ($)':fees,'P&L before costs ($)':cash+financed_fees,'Stock turnover ($)':turnover})
-    return {'path':path,'forecasts':forecasts,'summary':pd.DataFrame(rows),'ledger':pd.DataFrame(ledger),'premium':premium,'strike':strike}
