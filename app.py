@@ -4,7 +4,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from modules.engine import (prices_for,forecast_from_prices,option_data,surface_grid,
-                            historical_nvda_prices,historical_episode,black_scholes,hedge,simulate_path,stress_prices,stress_statistics,STRESS)
+                            historical_nvda_prices,historical_episode,black_scholes,hedge,simulate_path,stress_prices, stress_statistics, stress_resilience, STRESS, RESILIENCE_WEIGHTS)
 
 PURPLE='#A78BFA';BLUE='#48CAE4';GREEN='#A3DA91';BG='#090B13'
 st.set_page_config(page_title='VolatilityQuant | Quantitative Risk Intelligence',page_icon='◈',layout='wide',initial_sidebar_state='expanded')
@@ -33,7 +33,7 @@ def get_forecasts(ticker):return forecast_from_prices(get_prices(ticker))
 @st.cache_data(ttl=1800,show_spinner=False)
 def get_options(ticker):return option_data(ticker)
 @st.cache_data(ttl=3600,show_spinner=False)
-def get_stress():return stress_prices()
+def get_stress(ticker):return stress_prices(ticker)
 def get_stress_analysis(ticker):
     p=get_stress(ticker);vol,dd,summary=stress_statistics(p)
     return p,vol,dd,summary,stress_resilience(p,vol)
