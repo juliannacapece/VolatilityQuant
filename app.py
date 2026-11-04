@@ -35,6 +35,10 @@ def get_options(ticker):return option_data(ticker)
 @st.cache_data(ttl=3600,show_spinner=False)
 def get_stress():return stress_prices()
 
+STRESS_TICKERS={'SPY':'S&P 500 ETF','QQQ':'Nasdaq-100 ETF','IWM':'Russell 2000 ETF','DIA':'Dow Jones ETF',
+                'AAPL':'Apple','MSFT':'Microsoft','AMZN':'Amazon','NVDA':'NVIDIA','JPM':'JPMorgan Chase',
+                'XOM':'ExxonMobil','JNJ':'Johnson & Johnson','TSLA':'Tesla'}
+
 with st.sidebar:
     st.markdown('## ◈ VOLATILITYQUANT')
     st.caption('QUANTITATIVE RISK INTELLIGENCE')
