@@ -248,48 +248,6 @@ def hedge(path,K,T,r,hedge_vol,market_vol,kind='call',cost=.001,size=100):
         records.append({'Day':day,'Stock':S,'PortfolioValue':value,'TransactionCosts':fees,'Delta':d})
     return pd.DataFrame(records)
 
-def historical_nvda_prices():
-    """Fetch the latest six completed, unadjusted NVDA closing prices."""
-
-    fetched = pd.Timestamp.now(tz="America/New_York")
-
-    data = yf.download(
-        "NVDA",
-        period="10d",
-        auto_adjust=False,
-        progress=False
-    )
-
-    if data.empty:
-        raise ValueError("No NVDA historical prices were returned.")
-
-    # Handle yfinance's newer MultiIndex column format
-    if isinstance(data.columns, pd.MultiIndex):
-        data.columns = data.columns.get_level_values(0)
-
-    if "Close" not in data.columns:
-        raise ValueError("NVDA closing prices were not available.")
-
-    prices = data["Close"].dropna()
-
-    # Conservatively exclude today's session
-    today = fetched.date()
-    prices = prices.loc[
-        [date.date() < today for date in prices.index]
-    ]
-
-    # Six closes = one opening reference + five evaluated moves
-    prices = prices.tail(6)
-
-    if len(prices) < 6:
-        raise ValueError(
-            f"Only {len(prices)} completed NVDA sessions were available; "
-            "six are required."
-        )
-
-    return prices, fetched
-
-
 def stress_prices(ticker='SPY'):
     p=prices_for(ticker,period='max')
     return p.loc['2005-01-01':]
@@ -434,3 +392,65 @@ def load_aapl_snapshot():
         )
 
     return spot, d, snapshot_time
+
+def historical_nvda_prices(now=None):
+    """Exclude today's session conservatively, including on early-close days."""
+    now = pd.Timestamp.now(tz='America/New_York') if now is None else pd.Timestamp(now).tz_convert('America/New_York')
+    # Before the next NY calendar day, today's bar is never considered final.
+    end = now.normalize().date()
+    start = (now - pd.DateOffset(years=6)).date()
+    data = yf.download('NVDA', start=str(start), end=str(end), auto_adjust=False, progress=False)
+    if data.empty:
+        raise ValueError('No NVDA data returned')
+    if isinstance(data.columns, pd.MultiIndex):
+        data.columns=data.columns.get_level_values(0)
+    prices=data['Close'].dropna().sort_index()
+    dates=pd.DatetimeIndex(prices.index)
+    if dates.tz is not None:
+        dates=dates.tz_convert('America/New_York').tz_localize(None)
+    prices.index=dates.normalize()
+    prices=prices.loc[prices.index < pd.Timestamp(end)]
+    if len(prices)<320:
+        raise ValueError('Insufficient completed NVDA history')
+    return prices, now
+
+
+def historical_episode(prices, cost=.001, manual=None, forecaster=forecast_from_prices):
+    """Five observed moves; each decision forecasts only its remaining horizon.
+
+    Closing positions approximate execution at observed closes. Rates and time
+    use trading-day conventions. No intermediate option market prices implied.
+    """
+    prices=prices.sort_index().dropna()
+    if len(prices)<320 or not prices.index.is_unique or not np.all(np.isfinite(prices)) or (prices<=0).any():
+        raise ValueError('Need unique dates and at least 320 positive finite closes')
+    path=prices.iloc[-6:]; strike=float(path.iloc[0]); rate=.04; size=100
+    forecasts=[]
+    for i,date in enumerate(path.index[:-1]):
+        history=prices.loc[:date].loc[lambda x:x.index >= date-pd.DateOffset(years=5)]
+        pred=forecaster(history,horizon=5-i)
+        forecasts.append({'Decision date':date,'Next close':path.index[i+1],'Days remaining':5-i,**pred})
+    forecasts=pd.DataFrame(forecasts)
+    if manual is not None:
+        forecasts['Manual']=volatility_schedule(manual,5)*100
+    premium=black_scholes(strike,strike,5/252,rate,forecasts.Historical.iloc[0]/100,'call')[0]
+    rows=[]; ledger=[]
+    for name in ['Historical','GARCH','XGBoost']+(['Manual'] if manual is not None else []):
+        cash=-premium*size; shares=0.; fees=0.; turnover=0.; financed_fees=0.
+        for i,(date,spot) in enumerate(path.items()):
+            if i:
+                cash*=np.exp(rate/252)
+                financed_fees*=np.exp(rate/252)
+            before=shares
+            if i<5:
+                vol=float(forecasts[name].iloc[i])/100
+                _,delta=black_scholes(spot,strike,(5-i)/252,rate,vol,'call')
+                shares=-delta*size
+            else:
+                shares=0.;delta=np.nan
+                cash+=max(spot-strike,0)*size
+            trade=shares-before; notional=abs(trade)*spot;fee=notional*cost
+            cash-=trade*spot+fee;fees+=fee;turnover+=notional;financed_fees+=fee
+            ledger.append({'Strategy':name,'Date':date,'Stock close ($)':spot,'Shares after trade':shares,'Shares traded':trade,'Cash balance ($)':cash,'Cumulative costs ($)':fees})
+        rows.append({'Strategy':name,'Terminal P&L ($)':cash,'Trading costs ($)':fees,'P&L before costs ($)':cash+financed_fees,'Stock turnover ($)':turnover})
+    return {'path':path,'forecasts':forecasts,'summary':pd.DataFrame(rows),'ledger':pd.DataFrame(ledger),'premium':premium,'strike':strike}
