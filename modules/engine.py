@@ -1,9 +1,11 @@
 """Reusable quantitative calculations extracted from VolatilityLab research notebooks."""
+from pathlib import Path
 import numpy as np
 import pandas as pd
 import yfinance as yf
 from scipy.stats import norm
 from scipy.interpolate import griddata
+from scipy.optimize import brentq
 from arch import arch_model
 from xgboost import XGBRegressor
 
@@ -45,7 +47,122 @@ def forecast_from_prices(p, horizon=HORIZON):
     return {'Historical':float(hist),'GARCH':float(garch),'XGBoost':float(np.sqrt(x*252))}
 
 
-def option_data(ticker, max_expirations=18):
+# --- Feature 2: option chains and implied volatility ---------------------------
+# We compute IV ourselves from bid/ask mid-quotes rather than trusting Yahoo's
+# reported impliedVolatility, which is often inconsistent between calls and puts
+# at the same strike. Pricing uses Black-76 on a forward implied, per expiry,
+# from put-call parity, so dividends are handled without a dividend-yield input.
+# Listed US equity options are American; for the out-of-the-money contracts used
+# on the surface the early-exercise premium is small, but deep in-the-money IVs
+# (especially puts) can be biased.
+
+SNAPSHOT_FILE = Path(__file__).resolve().parent.parent / 'data' / 'AAPL_options_snapshot.csv'
+SNAPSHOT_SPOT = 344.63  # approximate AAPL price when the snapshot was collected
+
+
+def black76_price(F, K, T, DF, sigma, kind):
+    """European option price on a forward F with discount factor DF."""
+    sd = sigma * np.sqrt(T)
+    d1 = (np.log(F / K) + 0.5 * sd * sd) / sd
+    d2 = d1 - sd
+    if kind == 'Call':
+        return DF * (F * norm.cdf(d1) - K * norm.cdf(d2))
+    return DF * (K * norm.cdf(-d2) - F * norm.cdf(-d1))
+
+
+def implied_vol(price, F, K, T, DF, kind, lo=1e-4, hi=5.0):
+    """Black-76 implied volatility (decimal) found with Brent's method.
+
+    Returns NaN when the price lies outside the no-arbitrage bounds
+    DF*max(F-K, 0) < C < DF*F (calls) or DF*max(K-F, 0) < P < DF*K (puts),
+    because no volatility can reproduce such a price.
+    """
+    values = (price, F, K, T, DF)
+    if not all(np.isfinite(v) and v > 0 for v in values):
+        return np.nan
+    intrinsic = DF * max(F - K, 0.0) if kind == 'Call' else DF * max(K - F, 0.0)
+    upper = DF * F if kind == 'Call' else DF * K
+    if not intrinsic < price < upper:
+        return np.nan
+    try:
+        return brentq(lambda s: black76_price(F, K, T, DF, s, kind) - price, lo, hi, xtol=1e-8)
+    except ValueError:  # root lies outside [lo, hi]
+        return np.nan
+
+
+def implied_forward(chain, spot, DF, n_strikes=5):
+    """Forward price for one expiry from put-call parity, C - P = DF * (F - K).
+
+    Uses the median over the n strikes closest to spot that have both a call
+    and a put mid-quote. Falls back to spot / DF (no dividends) when there are
+    no usable pairs or the estimate is implausible.
+    Returns (forward, source description).
+    """
+    calls = chain[chain.optionType == 'Call'].groupby('strike')['mid'].median()
+    puts = chain[chain.optionType == 'Put'].groupby('strike')['mid'].median()
+    strikes = calls.index.intersection(puts.index)
+    if len(strikes) > 0:
+        near = strikes[np.argsort(np.abs(strikes.to_numpy() - spot))[:n_strikes]]
+        F = float(np.median(near + (calls[near] - puts[near]) / DF))
+        if np.isfinite(F) and abs(F / spot - 1) < 0.25:
+            return F, 'put-call parity'
+    return spot / DF, 'spot carry (no dividends)'
+
+
+def prepare_chain(raw, spot, as_of, rate=0.04):
+    """Screen quotes and compute forwards and our own IVs (live and snapshot).
+
+    raw needs columns strike, bid, ask, optionType ('Call'/'Put'), expiration
+    and, for comparison only, Yahoo's impliedVolatility. as_of is the quote
+    time; rate is the continuously compounded annual risk-free rate (decimal).
+    """
+    d = raw.copy()
+    for c in ['strike', 'bid', 'ask', 'impliedVolatility']:
+        d[c] = pd.to_numeric(d[c], errors='coerce')
+
+    # Quote-quality screens
+    d = d[(d['bid'] > 0) & (d['ask'] > d['bid'])].copy()
+    d['mid'] = (d['bid'] + d['ask']) / 2
+    d['relativeSpread'] = (d['ask'] - d['bid']) / d['mid']
+    d = d[d['relativeSpread'] < .30].copy()
+
+    # Time to expiry: listed options stop trading at 4pm New York time
+    as_of = pd.Timestamp(as_of)
+    as_of = (as_of.tz_localize('America/New_York') if as_of.tzinfo is None
+             else as_of.tz_convert('America/New_York'))
+    d['expiration'] = pd.to_datetime(d['expiration'])
+    expiry_close = (d['expiration'] + pd.Timedelta(hours=16)).dt.tz_localize('America/New_York')
+    d['T'] = (expiry_close - as_of).dt.total_seconds() / (365 * 86400)
+    d['daysToExpiration'] = (d['expiration'] - as_of.normalize().tz_localize(None)).dt.days
+    d = d[d['daysToExpiration'].between(7, 365)].copy()
+    d['discountFactor'] = np.exp(-rate * d['T'])
+
+    # One forward per expiry, estimated before the moneyness screen so that
+    # near-the-money call/put pairs are always available
+    forwards = {}
+    for exp, group in d.groupby('expiration'):
+        forwards[exp] = implied_forward(group, spot, group['discountFactor'].iloc[0])
+    d['forward'] = d['expiration'].map(lambda e: forwards[e][0])
+    d['forwardSource'] = d['expiration'].map(lambda e: forwards[e][1])
+
+    d['Moneyness'] = d['strike'] / spot
+    d['ForwardMoneyness'] = d['strike'] / d['forward']
+    d = d[d['Moneyness'].between(.70, 1.30)].copy()
+
+    d['YahooIV_Percent'] = d['impliedVolatility'] * 100
+    d['IV_Percent'] = 100 * np.array([
+        implied_vol(row.mid, row.forward, row.strike, row.T, row.discountFactor, row.optionType)
+        for row in d.itertuples()
+    ], dtype=float)
+
+    d = d[d['IV_Percent'].between(5, 150)].copy()
+    if d.empty:
+        raise ValueError('Options were downloaded, but no contracts passed the quality filters.')
+    return d.reset_index(drop=True)
+
+
+def option_data(ticker, max_expirations=18, rate=0.04):
+    """Live chains from Yahoo Finance. Returns (spot, contracts, as_of)."""
     import time
 
     stock = yf.Ticker(ticker)
@@ -118,66 +235,10 @@ def option_data(ticker, max_expirations=18):
             f"Errors: {details or 'No contracts returned'}"
         )
 
-    d = pd.concat(parts, ignore_index=True)
+    as_of = pd.Timestamp.now(tz="America/New_York")
+    raw = pd.concat(parts, ignore_index=True)
+    return spot, prepare_chain(raw, spot, as_of, rate), as_of
 
-    # Convert numerical columns
-    for c in [
-        "strike",
-        "bid",
-        "ask",
-        "impliedVolatility"
-    ]:
-        d[c] = pd.to_numeric(
-            d[c], errors="coerce"
-        )
-
-    # Initial quote filtering
-    d = d[
-        (d["bid"] > 0)
-        & (d["ask"] > d["bid"])
-        & d["impliedVolatility"].between(.01, 3)
-    ].copy()
-
-    d["relativeSpread"] = (
-        (d["ask"] - d["bid"])
-        / ((d["ask"] + d["bid"]) / 2)
-    )
-
-    d["expiration"] = pd.to_datetime(
-        d["expiration"]
-    )
-
-    now = (
-        pd.Timestamp.now(tz="America/New_York")
-        .normalize()
-        .tz_localize(None)
-    )
-
-    d["daysToExpiration"] = (
-        d["expiration"] - now
-    ).dt.days
-
-    d["Moneyness"] = d["strike"] / spot
-
-    d["IV_Percent"] = (
-        d["impliedVolatility"] * 100
-    )
-
-    # Final data-quality filters
-    d = d[
-        d["relativeSpread"].lt(.30)
-        & d["daysToExpiration"].between(7, 365)
-        & d["Moneyness"].between(.70, 1.30)
-        & d["IV_Percent"].between(5, 150)
-    ].copy()
-
-    if d.empty:
-        raise ValueError(
-            f"Options were downloaded for {ticker}, "
-            "but no contracts passed the quality filters."
-        )
-
-    return spot, d
 
 
 def surface_grid(df,xcol='Moneyness'):
@@ -316,82 +377,19 @@ def stress_resilience(p,vol):
 
 
 
-from pathlib import Path
+def load_aapl_snapshot(rate=0.04):
+    """Saved AAPL option quotes (demo fallback when live data is unavailable).
 
-def load_aapl_snapshot():
-    """Load saved AAPL option quotes for demo use."""
+    Returns (spot, contracts, as_of) like option_data(). Time to expiry is
+    measured from the snapshot timestamp, so results do not drift with the
+    calendar.
+    """
+    if not SNAPSHOT_FILE.exists():
+        raise FileNotFoundError('AAPL options snapshot was not found.')
+    raw = pd.read_csv(SNAPSHOT_FILE)
+    as_of = pd.to_datetime(raw['snapshotTimestampUTC'].iloc[0], utc=True)
+    return SNAPSHOT_SPOT, prepare_chain(raw, SNAPSHOT_SPOT, as_of, rate), as_of
 
-    file_path = (
-        Path(__file__).resolve().parent.parent
-        / "data"
-        / "AAPL_options_snapshot.csv"
-    )
-
-    if not file_path.exists():
-        raise FileNotFoundError(
-            "AAPL options snapshot was not found."
-        )
-
-    d = pd.read_csv(file_path)
-
-    # Use the approximate stock price from collection
-    spot = 344.63
-
-    # Read the snapshot timestamp
-    snapshot_time = pd.to_datetime(
-        d["snapshotTimestampUTC"].iloc[0],
-        utc=True
-    )
-
-    d["expiration"] = pd.to_datetime(
-        d["expiration"]
-    )
-
-    for column in [
-        "strike", "bid", "ask", "impliedVolatility"
-    ]:
-        d[column] = pd.to_numeric(
-            d[column], errors="coerce"
-        )
-
-    # Apply original quote-quality rules
-    d = d[
-        (d["bid"] > 0) &
-        (d["ask"] > d["bid"]) &
-        d["impliedVolatility"].between(0.01, 3)
-    ].copy()
-
-    d["relativeSpread"] = (
-        (d["ask"] - d["bid"]) /
-        ((d["ask"] + d["bid"]) / 2)
-    )
-
-    # Calculate maturity relative to snapshot date
-    snapshot_date = snapshot_time.tz_convert(
-        "America/New_York"
-    ).date()
-
-    d["daysToExpiration"] = (
-        d["expiration"] -
-        pd.Timestamp(snapshot_date)
-    ).dt.days
-
-    d["Moneyness"] = d["strike"] / spot
-    d["IV_Percent"] = d["impliedVolatility"] * 100
-
-    d = d[
-        (d["relativeSpread"] < 0.30) &
-        d["daysToExpiration"].between(7, 365) &
-        d["Moneyness"].between(0.70, 1.30) &
-        d["IV_Percent"].between(5, 150)
-    ].copy()
-
-    if d.empty:
-        raise ValueError(
-            "No saved contracts passed the filters."
-        )
-
-    return spot, d, snapshot_time
 
 def historical_nvda_prices(now=None):
     """Exclude today's session conservatively, including on early-close days."""
