@@ -195,7 +195,17 @@ elif page=='03 · Options Hedging':
             fig.update_layout(xaxis_title='Session date',yaxis_title='NVDA close ($)')
             st.plotly_chart(style(fig,320),use_container_width=True)
             st.subheader('Terminal hedging comparison')
-            st.dataframe(result['summary'],hide_index=True,use_container_width=True)
+            comparison = result['summary'].assign(
+                **{'Absolute hedging error ($)': result['summary']['Terminal P&L ($)'].abs()}
+            )
+            st.caption('Terminal P&L is signed hedging error relative to zero. Absolute error measures the distance from zero after fees.')
+            fig = go.Figure(go.Bar(
+                x=comparison['Strategy'], y=comparison['Absolute hedging error ($)'],
+                marker_color=PURPLE,
+            ))
+            fig.update_layout(yaxis_title='Absolute hedging error ($)')
+            st.plotly_chart(style(fig, 300), use_container_width=True)
+            st.dataframe(comparison,hide_index=True,use_container_width=True)
             st.subheader('Daily forecasts · annualized volatility (%)')
             st.dataframe(result['forecasts'],hide_index=True,use_container_width=True)
             st.subheader('Stock hedge and cash ledger')
@@ -244,9 +254,12 @@ elif page=='03 · Options Hedging':
         if 'daily_hedge_result' in st.session_state:
             df,schedule,source=st.session_state['daily_hedge_result']
             st.caption(f'Last completed run · {source}. Run again to apply changed settings. Stock starts at $100; the same random shocks are used across runs.')
-            a,b=st.columns(2)
-            a.metric('Final hedged P&L',f'${df.PortfolioValue.iloc[-1]:,.2f}')
-            b.metric('Total trading costs',f'${df.TransactionCosts.iloc[-1]:,.2f}')
+            final_error = df.PortfolioValue.iloc[-1]
+            a,b,c=st.columns(3)
+            a.metric('Signed hedging error (final P&L)',f'${final_error:,.2f}')
+            b.metric('Absolute hedging error',f'${abs(final_error):,.2f}')
+            c.metric('Total trading costs',f'${df.TransactionCosts.iloc[-1]:,.2f}')
+            st.caption('Absolute error is the distance from zero at expiration, after trading costs.')
             fig=go.Figure()
             for column,color in [('Market volatility (%)',BLUE),('Hedge volatility (%)',PURPLE)]:
                 fig.add_trace(go.Scatter(x=schedule['Trading day'],y=schedule[column],name=column,line_color=color,mode='lines+markers'))

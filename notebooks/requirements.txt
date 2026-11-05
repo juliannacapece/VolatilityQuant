@@ -1,0 +1,2 @@
+ipykernel
+nbformat>=5
