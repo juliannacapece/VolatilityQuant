@@ -1,4 +1,4 @@
-"""Reusable quantitative calculations extracted from VolatilityLab research notebooks."""
+"""Reusable quantitative calculations extracted from VolatilityQuant research notebooks."""
 from pathlib import Path
 import numpy as np
 import pandas as pd
