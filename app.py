@@ -133,6 +133,129 @@ elif page=='01 · AI Forecasting':
         fig.update_layout(yaxis_title='Annualized volatility (%)');st.plotly_chart(style(fig),use_container_width=True)
         st.caption('Historical = trailing 20-day mean squared returns. GARCH and XGBoost estimate next five trading days. These are volatility estimates, not expected stock returns.')
 
+
+
+    # FEATURE 1: GARCH Parameter Stability Analysis
+    st.divider()
+
+    with st.expander("GARCH(1,1) Parameter Stability Analysis"):
+        st.subheader("NVDA · Rolling Parameter Stability")
+
+        st.caption(
+            "GARCH(1,1) fitted on rolling two-year windows "
+            "of NVIDIA daily returns, updated approximately quarterly."
+        )
+
+        try:
+            stability = pd.read_csv(
+                "nvda_garch_parameter_stability.csv",
+                parse_dates=["Date"]
+            )
+
+            persistence = stability["persistence"]
+
+            # Summary metrics
+            col1, col2, col3 = st.columns(3)
+
+            col1.metric(
+                "Average Persistence",
+                f"{persistence.mean():.4f}"
+            )
+            col2.metric(
+                "Minimum Persistence",
+                f"{persistence.min():.4f}"
+            )
+            col3.metric(
+                "Maximum Persistence",
+                f"{persistence.max():.4f}"
+            )
+
+            # Chart 1: Volatility persistence
+            fig = go.Figure()
+
+            fig.add_trace(go.Scatter(
+                x=stability["Date"],
+                y=stability["persistence"],
+                mode="lines+markers",
+                name="Alpha + Beta",
+                line=dict(color=PURPLE, width=3)
+            ))
+
+            fig.add_hline(
+                y=1,
+                line_dash="dash",
+                line_color="#888888"
+            )
+
+            fig.update_layout(
+                title="NVDA · GARCH Volatility Persistence",
+                xaxis_title="Estimation Window End Date",
+                yaxis_title="Alpha + Beta",
+                yaxis_range=[0.84, 1.02]
+            )
+
+            st.plotly_chart(
+                style(fig, 380),
+                use_container_width=True
+            )
+
+            # Chart 2: Individual GARCH parameters
+            fig2 = go.Figure()
+
+            for parameter, color in [
+                ("alpha", BLUE),
+                ("beta", GREEN)
+            ]:
+                fig2.add_trace(go.Scatter(
+                    x=stability["Date"],
+                    y=stability[parameter],
+                    mode="lines+markers",
+                    name=parameter,
+                    line=dict(color=color, width=3)
+                ))
+
+            fig2.update_layout(
+                title="Individual GARCH Parameter Estimates",
+                xaxis_title="Estimation Window End Date",
+                yaxis_title="Parameter Estimate"
+            )
+
+            st.plotly_chart(
+                style(fig2, 350),
+                use_container_width=True
+            )
+
+            # Research interpretation
+            st.markdown("#### Research Findings")
+
+            st.info(
+                "NVDA's estimated volatility persistence averaged "
+                "0.9625, ranging from 0.8616 to 0.9980. "
+                "Persistence declined in early 2025 before recovering. "
+                "This suggests that estimated GARCH volatility dynamics "
+                "vary across historical estimation windows."
+            )
+
+            st.caption(
+                "Saved NVDA research results from Feature 1A. "
+                "Rolling-window variation is descriptive, not a formal "
+                "statistical test of parameter stability."
+            )
+
+            # Optional data table
+            if st.checkbox("Show parameter estimates"):
+                st.dataframe(
+                    stability.round(4),
+                    hide_index=True,
+                    use_container_width=True
+                )
+
+        except Exception as e:
+            st.warning(
+                f"Parameter stability results unavailable: {e}"
+            )
+
+
 elif page=='02 · IV Surface':
     st.header('Implied Volatility Explorer')
     LIVE,SNAPSHOT='Live (Yahoo Finance)','Saved AAPL snapshot'
