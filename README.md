@@ -1,2 +1,2 @@
-# VolatilityLab
+# VolatilityQuant
 Volatility Forecasting
