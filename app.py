@@ -135,125 +135,229 @@ elif page=='01 · AI Forecasting':
 
 
 
-    # FEATURE 1: GARCH Parameter Stability Analysis
+   
+    # FEATURE 1: Dynamic GARCH Parameter Stability
     st.divider()
 
     with st.expander("GARCH(1,1) Parameter Stability Analysis"):
-        st.subheader("NVDA · Rolling Parameter Stability")
+        st.subheader("Rolling GARCH Parameter Stability")
 
         st.caption(
-            "GARCH(1,1) fitted on rolling two-year windows "
-            "of NVIDIA daily returns, updated approximately quarterly."
+            "Analyze how GARCH parameters change across rolling "
+            "two-year estimation windows, updated every 63 trading days."
         )
 
-        try:
-            stability = pd.read_csv(
-                "nvda_garch_parameter_stability.csv",
-                parse_dates=["Date"]
+        if "forecast_result" not in st.session_state:
+            st.info("Generate forecasts first to load a ticker.")
+
+        else:
+            stability_ticker = st.session_state["forecast_result"][0]
+
+            st.write(f"Selected ticker: **{stability_ticker}**")
+
+            if st.button(
+                "Run parameter stability analysis",
+                key="run_garch_stability"
+            ):
+                try:
+                    from arch import arch_model
+
+                    with st.spinner(
+                        f"Fitting rolling GARCH models for {stability_ticker}..."
+                    ):
+                        prices = get_prices(stability_ticker)
+
+                        # Convert prices into daily log returns (%).
+                        if isinstance(prices, pd.DataFrame):
+                            if "Close" in prices.columns:
+                                prices = prices["Close"]
+                            elif "Adj Close" in prices.columns:
+                                prices = prices["Adj Close"]
+                            else:
+                                raise ValueError(
+                                    "Could not find a closing-price column."
+                                )
+
+                        prices = pd.Series(prices).dropna().astype(float)
+                        returns_pct = (
+                            np.log(prices / prices.shift(1)).dropna() * 100
+                        )
+
+                        window_days = 504
+                        step_days = 63
+
+                        if len(returns_pct) < window_days:
+                            raise ValueError(
+                                "Not enough price history. "
+                                "At least 504 daily returns are required."
+                            )
+
+                        records = []
+
+                        for end in range(
+                            window_days,
+                            len(returns_pct) + 1,
+                            step_days
+                        ):
+                            sample = returns_pct.iloc[
+                                end - window_days:end
+                            ]
+
+                            model = arch_model(
+                                sample,
+                                mean="Constant",
+                                vol="GARCH",
+                                p=1,
+                                q=1,
+                                dist="t"
+                            )
+
+                            fit = model.fit(
+                                disp="off",
+                                show_warning=False
+                            )
+
+                            if fit.convergence_flag != 0:
+                                continue
+
+                            params = fit.params
+                            alpha = float(params["alpha[1]"])
+                            beta = float(params["beta[1]"])
+
+                            records.append({
+                                "Date": sample.index[-1],
+                                "omega": float(params["omega"]),
+                                "alpha": alpha,
+                                "beta": beta,
+                                "persistence": alpha + beta
+                            })
+
+                        stability = pd.DataFrame(records)
+
+                        if stability.empty:
+                            raise ValueError(
+                                "No rolling GARCH models converged."
+                            )
+
+                        st.session_state["garch_stability_result"] = (
+                            stability_ticker,
+                            stability
+                        )
+
+                except Exception as e:
+                    st.error(f"Stability analysis failed: {e}")
+
+            # Display saved results after the button is clicked.
+            result = st.session_state.get(
+                "garch_stability_result"
             )
 
-            persistence = stability["persistence"]
+            if result is not None:
+                result_ticker, stability = result
 
-            # Summary metrics
-            col1, col2, col3 = st.columns(3)
+                if result_ticker != stability_ticker:
+                    st.info(
+                        "Click Run parameter stability analysis "
+                        "to calculate results for this ticker."
+                    )
 
-            col1.metric(
-                "Average Persistence",
-                f"{persistence.mean():.4f}"
-            )
-            col2.metric(
-                "Minimum Persistence",
-                f"{persistence.min():.4f}"
-            )
-            col3.metric(
-                "Maximum Persistence",
-                f"{persistence.max():.4f}"
-            )
+                else:
+                    persistence = stability["persistence"]
 
-            # Chart 1: Volatility persistence
-            fig = go.Figure()
+                    col1, col2, col3 = st.columns(3)
 
-            fig.add_trace(go.Scatter(
-                x=stability["Date"],
-                y=stability["persistence"],
-                mode="lines+markers",
-                name="Alpha + Beta",
-                line=dict(color=PURPLE, width=3)
-            ))
+                    col1.metric(
+                        "Average Persistence",
+                        f"{persistence.mean():.4f}"
+                    )
+                    col2.metric(
+                        "Minimum Persistence",
+                        f"{persistence.min():.4f}"
+                    )
+                    col3.metric(
+                        "Maximum Persistence",
+                        f"{persistence.max():.4f}"
+                    )
 
-            fig.add_hline(
-                y=1,
-                line_dash="dash",
-                line_color="#888888"
-            )
+                    # Chart 1: Persistence
+                    fig = go.Figure()
 
-            fig.update_layout(
-                title="NVDA · GARCH Volatility Persistence",
-                xaxis_title="Estimation Window End Date",
-                yaxis_title="Alpha + Beta",
-                yaxis_range=[0.84, 1.02]
-            )
+                    fig.add_trace(go.Scatter(
+                        x=stability["Date"],
+                        y=stability["persistence"],
+                        mode="lines+markers",
+                        name="Alpha + Beta",
+                        line=dict(color=PURPLE, width=3)
+                    ))
 
-            st.plotly_chart(
-                style(fig, 380),
-                use_container_width=True
-            )
+                    fig.add_hline(
+                        y=1,
+                        line_dash="dash",
+                        line_color="#888888"
+                    )
 
-            # Chart 2: Individual GARCH parameters
-            fig2 = go.Figure()
+                    fig.update_layout(
+                        title=f"{result_ticker} · GARCH Persistence",
+                        xaxis_title="Window End Date",
+                        yaxis_title="Alpha + Beta"
+                    )
 
-            for parameter, color in [
-                ("alpha", BLUE),
-                ("beta", GREEN)
-            ]:
-                fig2.add_trace(go.Scatter(
-                    x=stability["Date"],
-                    y=stability[parameter],
-                    mode="lines+markers",
-                    name=parameter,
-                    line=dict(color=color, width=3)
-                ))
+                    st.plotly_chart(
+                        style(fig, 380),
+                        use_container_width=True
+                    )
 
-            fig2.update_layout(
-                title="Individual GARCH Parameter Estimates",
-                xaxis_title="Estimation Window End Date",
-                yaxis_title="Parameter Estimate"
-            )
+                    # Chart 2: Alpha and Beta
+                    fig2 = go.Figure()
 
-            st.plotly_chart(
-                style(fig2, 350),
-                use_container_width=True
-            )
+                    for parameter, color in [
+                        ("alpha", BLUE),
+                        ("beta", GREEN)
+                    ]:
+                        fig2.add_trace(go.Scatter(
+                            x=stability["Date"],
+                            y=stability[parameter],
+                            mode="lines+markers",
+                            name=parameter,
+                            line=dict(color=color, width=3)
+                        ))
 
-            # Research interpretation
-            st.markdown("#### Research Findings")
+                    fig2.update_layout(
+                        title="Individual GARCH Parameters",
+                        xaxis_title="Window End Date",
+                        yaxis_title="Parameter Estimate"
+                    )
 
-            st.info(
-                "NVDA's estimated volatility persistence averaged "
-                "0.9625, ranging from 0.8616 to 0.9980. "
-                "Persistence declined in early 2025 before recovering. "
-                "This suggests that estimated GARCH volatility dynamics "
-                "vary across historical estimation windows."
-            )
+                    st.plotly_chart(
+                        style(fig2, 350),
+                        use_container_width=True
+                    )
 
-            st.caption(
-                "Saved NVDA research results from Feature 1A. "
-                "Rolling-window variation is descriptive, not a formal "
-                "statistical test of parameter stability."
-            )
+                    st.info(
+                        f"{result_ticker}'s estimated GARCH persistence "
+                        f"averaged {persistence.mean():.4f}, "
+                        f"ranging from {persistence.min():.4f} "
+                        f"to {persistence.max():.4f}. "
+                        "Changes across windows indicate variation "
+                        "in estimated volatility dynamics."
+                    )
 
-            # Optional data table
-            if st.checkbox("Show parameter estimates"):
-                st.dataframe(
-                    stability.round(4),
-                    hide_index=True,
-                    use_container_width=True
-                )
+                    st.caption(
+                        "Rolling two-year windows overlap. "
+                        "This is a descriptive stability analysis, "
+                        "not a formal statistical test."
+                    )
 
-        except Exception as e:
-            st.warning(
-                f"Parameter stability results unavailable: {e}"
-            )
+                    if st.checkbox(
+                        "Show parameter estimates",
+                        key="show_garch_parameters"
+                    ):
+                        st.dataframe(
+                            stability.round(4),
+                            hide_index=True,
+                            use_container_width=True
+                        )
+
 
 
 elif page=='02 · IV Surface':
