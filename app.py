@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from modules.engine import (prices_for,forecast_from_prices,option_data,surface_grid,
+from modules.engine import (prices_for,forecast_from_prices,option_data,load_aapl_snapshot,surface_grid,
                             historical_nvda_prices,historical_episode,black_scholes,hedge,simulate_path,stress_prices, stress_statistics, stress_resilience, STRESS, RESILIENCE_WEIGHTS)
 
 PURPLE='#A78BFA';BLUE='#48CAE4';GREEN='#A3DA91';BG='#090B13'
@@ -31,7 +31,9 @@ def get_prices(ticker):return prices_for(ticker)
 @st.cache_data(ttl=1800,show_spinner=False)
 def get_forecasts(ticker):return forecast_from_prices(get_prices(ticker))
 @st.cache_data(ttl=1800,show_spinner=False)
-def get_options(ticker):return option_data(ticker)
+def get_options(ticker,rate):return option_data(ticker,rate=rate)
+@st.cache_data(show_spinner=False)
+def get_snapshot(rate):return load_aapl_snapshot(rate)
 @st.cache_data(ttl=3600,show_spinner=False)
 def get_stress(ticker):return stress_prices(ticker)
 def get_stress_analysis(ticker):
@@ -133,19 +135,36 @@ elif page=='01 · AI Forecasting':
 
 elif page=='02 · IV Surface':
     st.header('Implied Volatility Explorer')
-    import yfinance as yf
-    st.caption(f"yfinance version: {yf.__version__}")
-    ticker=st.text_input('Ticker symbol',value='AAPL',key='iv_ticker').strip().upper()
+    LIVE,SNAPSHOT='Live (Yahoo Finance)','Saved AAPL snapshot'
+    src_col,ticker_col,rate_col=st.columns([1.4,1,1])
+    with src_col:source=st.radio('Data source',[LIVE,SNAPSHOT],horizontal=True,key='iv_source')
+    with ticker_col:ticker=st.text_input('Ticker symbol',value='AAPL',key='iv_ticker',disabled=source==SNAPSHOT).strip().upper()
+    with rate_col:rate=st.number_input('Risk-free rate (%)',0.0,15.0,4.0,0.25,key='iv_rate')/100
     if st.button('Load option chains',type='primary'):
-        try:
-            with st.spinner('Retrieving options chains...'):spot,options=get_options(ticker)
-            st.session_state['option_result']=(ticker,spot,options)
-        except Exception as e:st.error(f'Options unavailable: {e}')
-    if 'option_result' in st.session_state:
-        t,spot,options=st.session_state['option_result']
+        result=None;live_error=None
+        if source==LIVE:
+            try:
+                with st.spinner('Retrieving options chains...'):spot,options,as_of=get_options(ticker,rate)
+                result=(ticker,spot,options,as_of,'Live · Yahoo Finance',None,rate)
+            except Exception as e:live_error=f'live options for {ticker} were unavailable ({e})'
+        if result is None:  # snapshot chosen, or automatic fallback after a live failure
+            try:
+                spot,options,as_of=get_snapshot(rate)
+                result=('AAPL',spot,options,as_of,'Saved snapshot',live_error,rate)
+            except Exception as e:st.error(f'Options unavailable. Saved snapshot also failed: {e}')
+        if result:st.session_state['option_result']=result
+    if len(st.session_state.get('option_result',()))==7:
+        t,spot,options,as_of,label,live_error,run_rate=st.session_state['option_result']
+        if live_error:st.warning(f'Showing the saved AAPL snapshot because {live_error}.')
+        st.caption(f'{label} · {t} · quotes as of {as_of.tz_convert("America/New_York"):%Y-%m-%d %H:%M} New York time · risk-free rate {run_rate:.2%}')
         a,b,c=st.columns(3);a.metric('Reference stock price',f'${spot:.2f}');b.metric('Screened contracts',len(options));c.metric('Expirations',options.expiration.nunique())
-        kind=st.selectbox('Surface', ['Combined OTM','Calls','Puts'])
+        kind_col,iv_col=st.columns(2)
+        with kind_col:kind=st.selectbox('Surface', ['Combined OTM','Calls','Puts'])
+        with iv_col:iv_source=st.radio('Implied volatility',['Computed from mid-quotes','Yahoo-reported'],horizontal=True,
+                                       help='Computed: Black-76 on bid/ask mid with a forward implied from put-call parity per expiry. Yahoo-reported values are shown for comparison.')
         d=options.copy()
+        computed=iv_source=='Computed from mid-quotes'
+        if not computed:d['IV_Percent']=d['YahooIV_Percent']
         if kind=='Calls':d=d[d.optionType=='Call']
         elif kind=='Puts':d=d[d.optionType=='Put']
         else:d=d[((d.optionType=='Call')&(d.strike>=spot))|((d.optionType=='Put')&(d.strike<=spot))]
@@ -164,11 +183,20 @@ elif page=='02 · IV Surface':
             fig=go.Figure()
             for label,color in [('Call',BLUE),('Put',PURPLE)]:
                 sub=subset[subset.optionType==label]
-                if not sub.empty:fig.add_trace(go.Scatter(x=sub.Moneyness,y=sub.IV_Percent,mode='lines+markers',name=label,line_color=color))
+                if not sub.empty:
+                    fig.add_trace(go.Scatter(x=sub.Moneyness,y=sub.IV_Percent,mode='lines+markers',name=label,line_color=color))
+                    if computed and st.session_state.get('iv_compare_yahoo'):
+                        fig.add_trace(go.Scatter(x=sub.Moneyness,y=sub.YahooIV_Percent,mode='markers',name=f'{label} · Yahoo-reported',
+                                                 marker=dict(color=color,symbol='circle-open',size=7),opacity=.7))
             fig.add_vline(x=1,line_dash='dash',line_color='#888')
             fig.update_layout(xaxis_title='Strike / spot',yaxis_title='Implied volatility (%)')
             st.plotly_chart(style(fig),use_container_width=True)
-        st.caption('Exploratory interpolation only; not arbitrage-free. Last-trade timestamps do not prove current quote freshness. Thinly traded options can distort the surface.')
+            if computed:st.checkbox('Overlay Yahoo-reported IV for comparison',key='iv_compare_yahoo')
+            fwd=subset[['forward','forwardSource']].iloc[0] if not subset.empty else None
+            if fwd is not None:st.caption(f'Forward for {exp}: ${fwd.forward:.2f} ({fwd.forwardSource}).')
+        st.caption('Computed IV: Black-76 on the bid/ask mid-quote, with each expiry\'s forward implied from put-call parity (so dividends need no separate input) and the chosen risk-free rate. '
+                   'Listed equity options are American; out-of-the-money IVs are little affected, but deep in-the-money values (Calls/Puts views) can be biased. '
+                   'Exploratory interpolation only; not arbitrage-free. Last-trade timestamps do not prove current quote freshness. Thinly traded options can distort the surface.')
 
 elif page=='03 · Options Hedging':
     st.header('Dynamic Options Hedging')
