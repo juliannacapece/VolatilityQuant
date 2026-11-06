@@ -139,7 +139,10 @@ elif page=='01 · AI Forecasting':
     # FEATURE 1: Dynamic GARCH Parameter Stability
     st.divider()
 
-    with st.expander("GARCH(1,1) Parameter Stability Analysis"):
+         with st.expander(
+        "GARCH(1,1) Parameter Stability Analysis",
+        expanded=True
+    ):
         st.subheader("Rolling GARCH Parameter Stability")
 
         st.caption(
